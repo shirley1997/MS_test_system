@@ -1,0 +1,19 @@
+# pyproject.toml: config file which tells Python how to build and describe this package (replaces the old setup.py file)
+
+[build-system]
+# Use setuptools to build the package
+requires = ["setuptools>=80.7.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# The package name as it appears on package registries e.g. PyPI / Nexus
+name = "xueting-thesis-event-fengfu"
+version = "1.0.0"
+description = "This package add extra fields to the event. internal package for thesis microservice application"
+authors = [{ name = "Xueting Huang" }]
+# UNLICENSED-style: not open source
+license = "LicenseRef-Proprietary"
+# Pin Python version to match the thesis version for reproducibility
+requires-python = "==3.12.4"
+# This package has no dependencies, pure python module with stdlib only.
+dependencies = []

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Maven package metadata for java service internal package: response generator -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Basic information of this internal package -->
+    <groupId>com.xueting.thesis</groupId>
+    <artifactId>xueting-thesis-result-fanhui</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>xueting-thesis-result-fanhui</name>
+    <description>This package generate the final aggregated response. This package is a internal package of a microservice application.</description>
+
+    <properties>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <!-- JUnit 5 for unit tests. scope=test means it will not enter the published JAR, it is only used during testing. -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>6.0.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+
+    <!-- This package should upload to Nexus internal Maven repo. -->
+    <distributionManagement>
+        <repository>
+            <id>nexus-internal</id>
+            <url>http://localhost:8081/repository/maven-internal-hosted/</url>
+        </repository>
+    </distributionManagement>
+
+
+    <!-- Build plugin runs the JUnit tests when using "mvn test" -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.0</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>

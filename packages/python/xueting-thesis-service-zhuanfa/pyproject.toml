@@ -1,0 +1,19 @@
+# pyproject.toml: config file which tells Python how to build and describe this package (replaces the old setup.py file)
+
+[build-system]
+# Use setuptools to build the package
+requires = ["setuptools>=80.7.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xueting-thesis-service-zhuanfa"
+version = "1.0.0"
+description = "This package sends events to the next service (Java service). internal package for thesis microservice application"
+authors = [{ name = "Xueting Huang" }]
+license = "LicenseRef-Proprietary"
+requires-python = "==3.12.4"
+
+# This package use a dependency: the "requests" library
+dependencies = [
+    "requests>=2.32.2",
+]
