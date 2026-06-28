@@ -195,8 +195,6 @@ npm package documentation: https://docs.npmjs.com/creating-and-publishing-unscop
 
 ## 28.06.2026 Build npm service and python service
 
-# Thesis Progress — 2026-06-28
-
 ## Python service setup
 
 - Created a Python virtual environment (`.venv`) in `services/python/` 
