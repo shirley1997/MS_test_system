@@ -18,7 +18,7 @@ public class EventAggregator {
      *
      * @param currentState the counter (event_type -> count).
      *                     create an empty map for the first event
-     * @param event        the event object, must contain a non-empty "type" field
+     * @param event        a event object, must contain a non-empty "type" field
      * @return AggregationResult with the updated event and updated counter state
      */
     public static AggregationResult aggregate(
