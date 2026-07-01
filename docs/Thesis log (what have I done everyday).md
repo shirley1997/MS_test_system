@@ -193,7 +193,7 @@ npm package documentation: https://docs.npmjs.com/creating-and-publishing-unscop
 
 
 
-## 28.06.2026 Build npm service and python service
+## 28.06.2026: Build npm service and python service and the java internal packages
 
 ## Python service setup
 
@@ -240,8 +240,8 @@ npm package documentation: https://docs.npmjs.com/creating-and-publishing-unscop
 ## Java service decisions
 
 - `groupId = com.xueting.thesis`.
-- Chose **Javalin** instead of Spring Boot for lightweight smaller dependency graph 
-- Decided Java service is internal-facing only, so exposing aggregation state in response is acceptable.
+- Chose **Javalin** as framework instead of Spring Boot (javalin can realize the planed function or java service but introduce less dependencies compare to spring boot)
+- Decided Java service is internal-facing only, so printing aggregation state in response is acceptable.
 
 ## Built `xueting-thesis-event-juhe` (Java event aggregator)
 
@@ -273,3 +273,106 @@ npm package documentation: https://docs.npmjs.com/creating-and-publishing-unscop
 - Combine both Java internal packages into the service.
 - Run full end-to-end chain test: Node → Python → Java.
 - Then move on to setting up self-hosted GitHub Actions runner in Docker.
+
+
+# 30.06.2026: Build java service, application testing, Runner/Pipeline Planning
+
+
+Starting point: Both Java internal packages (`xueting-thesis-event-juhe`, `xueting-thesis-result-fanhui`) already published to Nexus at version 1.0.0.
+
+
+
+## Part1: Java Service — `aggregate-event-http-api`
+
+### Framework and library decisions
+- **Javalin 7.2.2** 
+- **Jackson Databind 2.21.2** for JSON handling (JSON Mapper).
+  - Not chosen upfront: discovered via Javalin's runtime error message (while testing the application) which explicitly recommended this exact version.
+
+
+### `pom.xml`setup
+- 3 dependencies: Javalin, both internal Maven packages, Jackson Databind (added after first runtime error).
+- 1 plugin: `maven-compiler-plugin` (pinned to 3.15.0 for now).
+- 1 property: `maven.compiler.release=25`.
+- 1 `<repositories>` entry pointing to `maven-group-public-first` Nexus repo.
+
+
+### `settings.xml` update
+- Added second `<server>` entry with `id="nexus-group-public-first"` (matching the id in `pom.xml`) for installing dependencies through the group repo (package managers has access to public registry + private registry).
+- Kept existing `nexus-internal` entry for publishing internal packages.
+-  **project file holds the URL (committable), user file holds credentials (private)**  -> no credential is accidentally commited to git
+
+### `Main.java`
+- Package: `com.xueting.thesis` (use the same groupId as the java internal packages).
+- Two endpoints:
+  - `GET /health` — liveness check, returns `"ok"`.
+  - `POST /aggregate` — parses incoming JSON event, aggregate it and send back
+
+### Encountered errors and fixes
+1. **Compile error: "Symbol nicht gefunden" on `app.get(...)` and `app.post(...)`**.
+   - Cause: Javalin 7 redesigned the routing API. Routes are no longer registered on the `Javalin` instance — they must be registered inside the `Javalin.create(config -> { ... })` block using `config.routes.get(...)`.
+   - Fix: restructured `Main.java` to register routes inside the config block.
+2. **PowerShell error running `mvn exec:java -Dexec.mainClass=...`**.
+   - Fix: wrap the `-D` argument in quotes: `mvn exec:java "-Dexec.mainClass=com.xueting.thesis.Main"`.
+3. **Runtime error: "You don't have an object mapper configured"**.
+   - Javalin 7 needs an external JSON library and told me exactly which one and what version.
+   - Fix: added `jackson-databind` 2.21.2 to `pom.xml`, recompiled, restarted service.
+
+### Testing (all passed)
+- **`GET /health`** returned `ok`.
+- **`POST /aggregate`** with a single event returned correct response with `processed_by_java: true` added and `aggregation_state: {"login": 1}`.
+- **Counter increase**: second request with same event type produced `{"login": 2}`, then a request with different type produced `{"login": 2, "login222": 1}` 
+- **Full Application testing (Node → Python → Java)**: sent request to Node's `/events` with only `id` and `type`. Response returned nested envelope with all three services' contributions (Node wraps Python wraps Java). Every layer added its expected field, counter incremented correctly. Microservice application build phase is complete.
+
+
+---
+
+## Part2: Consider options of configure Github Actions runner
+
+
+### GitHub Actions Runner: in Docker container or on native Windows machine?
+- Chose to build a **custom Dockerfile** rather than using a community image (e.g. `myoung34/github-runner`).
+- Reasoning: reproducible when running `docker build` 
+- Chose Docker over native Windows runner because:
+  - **Cache isolation between experiment cells** . when using runner on windows machine, config files need to manually removed between cells, unnoticed cache may pollute other experiment cells. Docker's per-cell `docker rm && docker run` guarantees a fresh filesystem.
+  - image is versioned via the Dockerfile. native runner is tied to my personal Windows install.
+- Image is built once (~1 GB, contains Node/Python/Java/Maven software at pinned versions + GHA runner binary). Container startup is about 2 seconds. No reinstalling tools between cells.
+
+### Runner count
+- **1 runner is enough**. Simpler than parallel.
+
+### Workflow structure
+- **4 YAML workflows**: 1 orchestrator + 3 service CIs (one per ecosystem).
+- Splitting service CI per ecosystem matches the original proposal (each service has independent CI pipeline), keeps each YAML small and readable.
+- The **central automated pipeline is implemented as a Python script**
+  - To realize functions such as matrix generation, CSV writing, and result classification 
+  - Python script uses GitHub CLI (`gh workflow run`, `gh run watch`, `gh run download`) to trigger service CIs and collect results.
+
+### initial design decisions about central automated pipeline
+1. Central Python script invalidates **Nexus proxy repo (proxy) caches** via Nexus REST API (`DELETE /service/rest/v1/repositories/{repo}/invalidate-cache`). internal-hosted repos are untouched, so published packages remain.
+2. Script generates config files for this cell based on A, B1, B2, C values.
+3. Script triggers the relevant service CI workflow with cell parameters.
+4. Runner container starts fresh from prebuilt image (2 sec).
+5. Workflow checks out repo, applies generated configs, prepares workspace per C1 (lockfile handling), runs the resolution command.
+6. Raw resolution output uploaded as workflow artifact.
+7. Container is destroyed. all client-side caches (`~/.npm`, `~/.m2/repository`, pip cache, `node_modules`, `.venv`, `target/`) are gone.
+8. Central script downloads artifact, normalizes, classifies (`malicious_resolved` / `private_resolved` / `resolution_error` / `invalid_configuration`), appends to CSV.
+9. Loop to next cell.
+
+### Nexus URL parameterization
+- `NEXUS_URL` is an environment variable consumed by the central script's config-generation logic (`http://host.docker.internal:8081` in CI, `http://localhost:8081` in local dev).
+- The script generates the whole config file per cell (`.npmrc`, `pip.conf`, `settings.xml`), composing `NEXUS_URL` + the right repo path(s) for the current B1. (docker's localhost is not the same as localhost on windows)
+
+
+### Same infrastructure covers Sub-RQ2
+- Same Docker runner image can host SCA tools for subRQ2 experiment
+- Scanning is done against the same project state that produced Sub-RQ1 results, Docker keeps reproducibility
+- Investment in Docker infrastructure can be used for both research question experiments.
+
+
+## Next steps
+Start Stage 1 of runner setup:
+1. Create `.github/workflows/hello-world.yml`  used for setup github runners
+2. Push to GitHub, observe it sitting in "queued" state (this proves the pull-based architecture: no runner is registered yet, so nothing picks up the job).
+3. write the Dockerfile.
+4. Register a runner from GitHub, start the container, watch the hello-world workflow complete automatically.
