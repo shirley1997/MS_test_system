@@ -1,0 +1,24 @@
+name: hello-world-test
+
+# write a basic yml file to explore the relationship between github and the self-hosted github actions runner
+# when doing CI 
+
+on:
+  push:
+    paths:
+      - '.github/workflows/hello-world.yml'
+  workflow_dispatch:      # allow re-trigger from the actions tab without another push, meaningful for test stage
+
+jobs:
+  hello:
+    runs-on: self-hosted   # only a self-hosted runner may take this job. so this job will be queued
+    steps:
+      - name: hello world runner
+        run: echo "hello, I am the self-hosted runner"
+
+      - name: Show where thie runner ran
+        run: |
+          echo "Runner OS : $RUNNER_OS"
+          echo "Hostname  : $(hostname)"
+          echo "User      : $(whoami)"
+          echo "Directory   : $(pwd)"
