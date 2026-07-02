@@ -66,9 +66,7 @@ Windows-Version: 10.0.19045.6466
 
 
 # Github Runner
-Install runner once.
-Do not update it during official experiments.
-Document runner version.
+v2.335.1
 
 
 Do not randomly upgrade package manager version, docker version later during the experiment, because it could change dependency resolution behavior. Keep the version fixed.

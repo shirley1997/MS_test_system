@@ -1,7 +1,8 @@
 name: hello-world-test
 
-# write a basic yml file to explore the relationship between github and the self-hosted github actions runner
-# when doing CI 
+# write a basic yml file to observe the relationship between github and the self-hosted github actions runner
+# steps: 1. push the workflow yml file  2. make self-hosted runner run in docker container 3. self-hosted runner registered and received the job from github
+# 4. self-hosted runner finished job -> details see /infrastructure/runner/runner_log.txt
 
 on:
   push:

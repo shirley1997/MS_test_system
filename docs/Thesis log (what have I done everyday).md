@@ -372,7 +372,69 @@ Starting point: Both Java internal packages (`xueting-thesis-event-juhe`, `xueti
 
 ## Next steps
 Start Stage 1 of runner setup:
-1. Create `.github/workflows/hello-world.yml`  used for setup github runners
+1. Create `.github/workflows/hello-world.yml`  used for testing the configured self-hosted github runners
 2. Push to GitHub, observe it sitting in "queued" state (this proves the pull-based architecture: no runner is registered yet, so nothing picks up the job).
 3. write the Dockerfile.
 4. Register a runner from GitHub, start the container, watch the hello-world workflow complete automatically.
+
+# 01 & 02.07.2026: Set up self-hosted github actions runner in docker container
+# Thesis log — 2026-07-02
+
+**Stand: Self-hosted GitHub Actions runner successfully built and run in docker now, registered on github, and verified. (can successfully complete the job of test workflow file hello-world.yml**
+
+## Stage 1: Hello-world workflow (observe the workflow when no self-hosted runner is built yet)
+
+- Created `.github/workflows/hello-world.yml`, a minimal workflow targeting `runs-on: self-hosted`.
+- Pushed to GitHub. First push required upgrading the Personal Access Token (PAT) with the `workflow` 
+- Job appeared in the Actions tab and shows **Queued** state with "Waiting for a runner to pick up this job." in output.
+- **Result:** jobs wait until a matching self-hosted runner comes online.
+
+## Stage 2: implement custom Dockerfile for the self-hosted runner
+
+Design decision: for reproducibility and isolation of experiment cell (cache need to be discarded and must not affect experiment result of other cells), built a github actions self-hosted runner as a Docker container from a custom Dockerfile rather than a community image, so every install step is controllable and only nessasary tools will be installed.
+
+Files created under `infrastructure/runner/`:
+- `Dockerfile` : described the base image, which tools should be installed, setup user, setup runner version etc.
+- `entrypoint.sh`: the script that register the runner on github and starts the runner when container start
+
+Image contents (all pinned versions) (try to be identical with the dev environment):
+- Base image: **Ubuntu 24.04** (widely used and smaller than windows docker)
+- Node.js **24.18.0** + npm **11.16.0** (from NodeSource apt repo)
+- Python **3.12** + pip **25.1.1** (pip installed via apt then upgraded with `--ignore-installed`)
+- Java: Eclipse Temurin **JDK 25** (via Adoptium apt repo)
+- Maven **3.9.16** (from Apache archive)
+- some nessasary commands: Git, curl, jq, sudo
+- GitHub Actions runner binary **v2.335.1** (Linux x64), SHA-256 verified (protect integrity)
+
+Key decisions made:
+- **Base OS:** Ubuntu 24.04. Base OS doesn't affect experimental variables anyway (all toolchains already pinned on top).
+- **Node install:** NodeSource apt repo, not nvm: nvm is for developer machines that need to switch between versions. a container needs exactly one pinned Node version.
+- **Python install:** use commands `pip install --break-system-packages --ignore-installed` to installed pip 25.1.1. 
+- **Java install:** Adoptium/eclipse temurin (Eclipse Foundation OpenJDK build). The Docker Hub `openjdk` image is deprecated; Temurin is the recommended alternative.
+- **Registration mode:** persistent. no `--ephemeral` flag. The orchestrator will handle cache isolation by destroying/recreating containers per cell in the next phase. (not nessasary correct, will reconsider this because current situation is confused)
+- **Token supply:** runtime enviroment variable (`GH_TOKEN`) via `docker run -e`. because the token expired in 1 hour. (short-lived, no need to embed into runner container)
+- **De-registration on shutdown:** skipped for simplicity. `--replace` flag in `config.sh` handles re-registration conflicts on next start. offline runners in GitHub's UI can be cleaned up manually.  (will reconsider this)
+
+## Stage 3: Build runner docker image, register on github, and verify through hello-world workflow
+
+- Built the image: `docker build -t thesis-runner:2.335.1 .`, completed in **4m 59s**.
+- Debugged one build failure along the way: the initial pip install line conflicted with the Debian-packaged pip (`Cannot uninstall pip 24.0, RECORD file not found`). Fixed by adding `--ignore-installed`.
+- Generated a registration token from GitHub → Settings → Actions → Runners → New self-hosted runner.
+- Started the container with `docker run -d -e GH_REPO_URL=... -e GH_TOKEN=... thesis-runner:2.335.1`.
+- Runner registered successfully. runner logs saves in /infrastructure/runner/runner_log.txt 
+- after restart the workflow, the `hello-world` job (queued) was picked up immediately and completed 
+  - `Running job: hello`
+  - `Job hello completed with result: Succeeded`
+
+## Outcome
+
+- successfully built reproducible self-hosted runner with docker file, it successfully runs in a docker container now.
+- test succeeded: Dockerfile → image → container → GitHub registration → workflow execution.
+
+
+## Next steps
+
+- Design and implement the 3 indepedent service CI pipeline (in seperated YAML files):
+  - `service-ci-nodejs.yml` (npm resolution)
+  - `service-ci-python.yml` (pip resolution)
+  - `service-ci-java.yml` (Maven resolution)
