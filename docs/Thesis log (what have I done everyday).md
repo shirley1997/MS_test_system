@@ -378,7 +378,6 @@ Start Stage 1 of runner setup:
 4. Register a runner from GitHub, start the container, watch the hello-world workflow complete automatically.
 
 # 01 & 02.07.2026: Set up self-hosted github actions runner in docker container
-# Thesis log — 2026-07-02
 
 **Stand: Self-hosted GitHub Actions runner successfully built and run in docker now, registered on github, and verified. (can successfully complete the job of test workflow file hello-world.yml**
 
@@ -438,3 +437,114 @@ Key decisions made:
   - `service-ci-nodejs.yml` (npm resolution)
   - `service-ci-python.yml` (pip resolution)
   - `service-ci-java.yml` (Maven resolution)
+
+
+# 06.07.2026
+
+**Starting design of the Node.js service CI pipeline. Surfaced an important npm design constraint that affects the definition of B1b/B1c. No code written yet, design not fully decided.**
+
+## Runner container maintenance
+
+- Deleted yesterday's stale runner container (`docker rm -f thesis-runner`).
+- Grabbed a fresh registration token from GitHub → Settings → Actions → Runners → New self-hosted runner.
+- Started a new container with `docker run -d -e GH_REPO_URL=... -e GH_TOKEN=... thesis-runner:2.335.1`.
+- Verified via `docker logs`: runner connected to GitHub and is idle.
+  - **Registration token** (from GitHub UI) = one-time visitor pass, expires in ~1 hour, used only at first registration.
+  - **`.credentials` file** (inside container) = long-lived employee badge issued by GitHub after successful registration. Used from then on.
+  - `docker stop` / `docker start` on the same container = credentials preserved, no new token needed.
+  - `docker rm` on the container = credentials destroyed, new token required next time.
+- Confirmed: for the actual 432-cell experiment, the orchestrator will use `docker run --rm` per cell (fresh container each time) because all cache should be discarded, which requires no token management from me. GitHub's registration token is only needed manually during development.
+
+## Node.js service CI pipeline — design work
+
+### Architecture decision: config generator lives in Python, not inline in YAML
+
+- Decided to write `automation_process/config_generators/generate_npmrc.py` as a standalone Python script.
+- The workflow YAML will call the script rather than embedding the cell-selection logic in bash.
+- Reasons:
+  - Can be tested at the terminal without triggering a workflow run
+  - Same design pattern will be reused for other ecosystems `generate_pipini.py` and `generate_settings_xml.py` later
+  - Cell-selection logic isolated in one place, unit-testable
+- Planned file layout:
+  ```
+  MS_test_system/
+  ├── .github/workflows/
+  │   └── service-ci-nodejs.yml         ← later
+  └── automation_process/
+      └── config_generators/
+          └── generate_npmrc.py         ← in progress
+  ```
+
+
+Return values decided:
+- Valid content → return the `.npmrc` string
+- B1d (no .npmrc at all) → return `None`
+- Invalid combination → raise `ValueError` (exception)
+
+`nexus_url` is a parameter (not hardcoded) because the value differs between local dev (`http://localhost:8081`) and inside the runner container (`http://host.docker.internal:8081`).
+
+### A → Nexus repo mapping (just like in proposal)
+
+| A | Nexus repo (private-facing) |
+|---|---|
+| A1a | `npm-group-public-first` |
+| A1b | `npm-group-private-first` |
+| A2 | `npm-internal-hosted` (with separate `npm-public-proxy` available) |
+| A3 | `npm-internal-hosted` only (no proxy exists) |
+
+### A × B1 matrix reviewed
+
+| | B1a (single URL) | B1b (multi, public direct) | B1c (multi, public via proxy) | B1d (no .npmrc) |
+|---|---|---|---|---|
+| **A1a** | group-public-first | private: group-public-first, public: npmjs.org | private: group-public-first, public: public-proxy | *(no file)* |
+| **A1b** | group-private-first | private: group-private-first, public: npmjs.org | private: group-private-first, public: public-proxy | *(no file)* |
+| **A2** | internal-hosted *(failure mode — no public path)* | private: internal-hosted, public: npmjs.org | private: internal-hosted, public: public-proxy | *(no file)* |
+| **A3** | internal-hosted *(failure mode — no public path)* | private: internal-hosted, public: npmjs.org | **INVALID** (A3 has no proxy repo) | *(no file)* |
+
+- **1 invalid combination**: A3 × B1c (need to consider, might add more later)
+- **2 intentional failure-mode cells**: A2 × B1a, A3 × B1a, meant to test what happens when no public path exists at all (expected classification: `resolution_error`)
+- **"Private URL" semantics**: resolves to the *group* repo for A1a/A1b, and to `internal-hosted` for A2/A3
+
+## Open design issue: npm registry semantics (needs decision before coding, need to read npm documentation)
+
+While reviewing the matrix, discovered a real npm limitation that affects the definition of B1b and B1c.
+
+**The problem:** npm has exactly one default registry via `registry=...`, plus per-scope registries via `@scope:registry=...`. There is **no built-in mechanism for "check registry A, then registry B" for unscoped packages**. My public dependencies (`express`, etc.) are unscoped — they only have flat names. So an `.npmrc` like:
+
+```
+registry=<internal-hosted URL>
+@public:registry=https://registry.npmjs.org
+```
+
+means: `express` still goes to internal-hosted (default). Only packages named literally `@public/foo` would go to npmjs.org.
+
+**Comparison:**
+- pip: has native `--extra-index-url` for fallback registries
+- Maven: has native multiple `<repository>` entries with fallback ordering
+- npm: only default + scope-based routing, no fallback
+
+**Three possible directions (need to choose):**
+
+1. **Rename public packages to scoped** (`@public/express-wrapper` etc.) — literally reach npmjs.org for public deps, but doesn't match how real Node projects consume unscoped public dependencies.
+2. **Redefine B1b/B1c as scope-based routing** — keep unscoped packages, accept that "public URL" only affects `@public/*`. Accurately reflects npm's design constraint. Potentially valuable finding for the thesis: "npm forces scope-based patterns that don't match unscoped real-world dependencies."
+3. **Vary the install command per cell instead of the config file** — muddies the "we vary configuration files" methodology story; also npm resolves transitive deps against whatever registry was set globally last.
+
+**Decision deferred**: this is a design decision affecting the research question sub-RQ1 variable definition, not just implementation. Will re-read the original Sub-RQ1 definitions in the thesis proposal tomorrow and possibly consult advisor before proceeding.
+
+## Outcome tonight
+
+- No code written yet — deliberately, because a real design gap surfaced that shouldn't be committed to code prematurely.
+- Design of `generate_npmrc.py` is roughly 80% locked (function signature, return contract, A mapping, matrix, failure-mode cells, invalid combinations all confirmed).
+- Blocking issue: definition of "multi-URL" for B1b/B1c under npm's registry constraints.
+- Runner container is running and ready for tomorrow's development.
+
+## Next session
+
+- Re-read Sub-RQ1 definitions carefully; decide on B1b/B1c semantics (or bring the question to advisor).
+- Implement `generate_npmrc.py` once B1b/B1c is settled.
+- Test all 16 A×B1 combinations at the terminal (11 content strings + 4 None + 1 exception).
+- Then write `service-ci-nodejs.yml` to call the generator.
+
+## Notes for future me
+
+- The npm/pip/Maven registry semantic differences discovered tonight are worth documenting as their own methodology section in the thesis. Different package managers offer fundamentally different registry-routing primitives, which itself affects the space of possible dependency confusion configurations.
