@@ -1,0 +1,125 @@
+# Per-service CI pipeline for the Node.js service. One run of this workflow = one experiment cell.
+
+# what will this workflow do:
+#   1. Receives cell inputs from the orchestrator (or manually from the UI)
+#   2. Generates the .npmrc file using the script: automation_process/config_generators/generate_npmrc.py
+#   3. Runs resolution command: `npm install --dry-run --json` inside services/nodejs/
+#   4. Uploads the raw JSON output as an artifact for the central automated pipeline to download
+
+# updated design decision: Classification of results happens on the central automated pipeline, not here.
+#
+# not written yet:
+#B2 (version specifier)-> generator for package.json not written yet; workflow input is
+#                                accepted and echoed, but no file is modified.
+#C1 (operation type)-> workflow input is accepted and echoed, but the
+#                                pipeline always runs `npm install --dry-run --json`.
+#                                Real C1a/C1b/C1c handling will be added later.
+
+name: Service CI - Node.js
+
+on:
+  workflow_dispatch:
+    inputs:
+      cell_id:
+        description: "Cell identifier, e.g. cell001. Used in artifact filename."
+        required: true
+        type: string
+      A:
+        description: "Nexus repository type"
+        required: true
+        type: choice
+        options: [A1a, A1b, A2, A3]
+      B1:
+        description: "package manager config"
+        required: true
+        type: choice
+        options: [B1a, B1b, B1c, B1d]
+      B2:
+        description: "version specifier (not applied yet)"
+        required: true
+        type: choice
+        options: [B2a, B2b, B2c]
+      C1:
+        description: "operation type (not applied yet)"
+        required: true
+        type: choice
+        options: [C1a, C1b, C1c]
+
+jobs:
+  run-cell:
+    # Match the label set in the runner container (RUNNER_LABELS in entrypoint.sh).
+    runs-on: [self-hosted, thesis-runner]
+
+    steps:
+      # 1. Get the repo to the runner.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Echo the cell inputs so the workflow log records which cell ran.
+      - name: Echo cell inputs
+        run: |
+          echo "cell_id = ${{ inputs.cell_id }}"
+          echo "A       = ${{ inputs.A }}"
+          echo "B1      = ${{ inputs.B1 }}"
+          echo "B2      = ${{ inputs.B2 }} (not yet applied)"
+          echo "C1      = ${{ inputs.C1 }} (not yet applied)"
+
+      # 3. Generate .npmrc for this cell and write it into services/nodejs/
+      #The generator prints file content on stdout, or nothing if variable B1d.
+      - name: Generate .npmrc
+        run: |
+          python3 - <<'PY'
+          import sys, os
+          sys.path.insert(0, "automation_process/config_generators")
+          from generate_npmrc import generate_npmrc
+
+          A  = "${{ inputs.A }}"
+          B1 = "${{ inputs.B1 }}"
+          nexus_url = "http://host.docker.internal:8081"
+
+          content = generate_npmrc(A, B1, nexus_url)
+
+          target = "services/nodejs/.npmrc"
+          if content is None:
+              if os.path.exists(target):
+                  os.remove(target)
+              print(f"[generate_npmrc] B1d: no {target} written")
+          else:
+              with open(target, "w") as f:
+                  f.write(content)
+              print(f"[generate_npmrc] wrote {target}:")
+              print(content)
+          PY
+
+      # 4. Placeholder for B2 (version specifier).
+      # will edit services/nodejs/package.json to change the version specification of internal packages, not implemented yet
+      - name: Apply version specifier (B2) - TODO
+        run: echo "TODO: apply B2=${{ inputs.B2 }} to package.json"
+
+      # 5. Placeholder for C1 (operation type).
+      # need to delete or keep the package-lock.json, not implemented yet.
+      - name: Apply pipeline operation (C1) - TODO
+        run: echo "TODO: apply C1=${{ inputs.C1 }} (lockfile state + command)"
+
+      # 6. Run dependency resolution command
+      #--dry-run: resolve only, do not actually download/install
+      #--json: structured output for the classification
+      # We save stdout to a file and always upload it, even on non-zero exit,
+      #because resolution_error is a valid experimental outcome
+      - name: Run npm install --dry-run --json
+        id: run_npm
+        working-directory: services/nodejs
+        # `continue-on-error: true` so a resolution failure does not skip the artifact upload step below. 
+        continue-on-error: true
+        run: |
+          npm install --dry-run --json > "${{ inputs.cell_id }}_npm_raw.json" 2>&1 || true
+          echo "first 40 lines of raw output: "
+          head -n 40 "${{ inputs.cell_id }}_npm_raw.json" || true
+
+      # 7. Upload the raw JSON as an artifact. The central automated pipeline will download and classify it, and write one row to results.csv.
+      - name: Upload raw resolution output
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.cell_id }}_npm_raw
+          path: services/nodejs/${{ inputs.cell_id }}_npm_raw.json
+          if-no-files-found: error

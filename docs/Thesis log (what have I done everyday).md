@@ -548,3 +548,176 @@ means: `express` still goes to internal-hosted (default). Only packages named li
 ## Notes for future me
 
 - The npm/pip/Maven registry semantic differences discovered tonight are worth documenting as their own methodology section in the thesis. Different package managers offer fundamentally different registry-routing primitives, which itself affects the space of possible dependency confusion configurations.
+
+
+# 09.07.2026
+
+Three main things done: fixed the runner container (fixed entrypoint.sh and rebuild the image) so it can restart cleanly, confirm the design decisions for how npm cells will work, and wrote both the `.npmrc` file generator and a draft of the Node.js service workflow (service CI pipeline) (not tested yet).
+
+
+
+### Fix inside `entrypoint.sh`
+- Added a check: if `.credentials` already exists → skip `config.sh` → go straight to `./run.sh`.
+- Moved the `GH_TOKEN` required-check *inside* the "need to register" branch, because on restart there is no registration token available (they expire after ~1 hour).
+- Added `exec` in front of `./run.sh`. This makes `run.sh` become the main process of the container, so when `docker stop` sends the SIGTERM signal, it goes directly to `run.sh` instead of bash. Cleaner shutdown.
+
+### Result
+- First start: registers normally.
+- `docker stop` + `docker start` on the same container: skips registration, no token needed. Works.
+- Small cosmetic issue: on restart there's still a brief "A session for this runner already exists" message in the log for ~1 minute, then it clears itself. This happens because run.sh didn't have time to tell GitHub "I'm going offline" during `docker stop`. Not a real problem. the central automated pipeline will use `docker run --rm` for each cell, not restart cycles.
+
+Every change to `entrypoint.sh` or the Dockerfile requires (needs rebuild!):
+
+```
+docker build -t thesis-runner:2.335.1 infrastructure/runner/
+docker rm -f thesis-runner
+docker run -d ... (with fresh registration token)
+```
+
+
+
+## 2. Reviewed the automation process design
+
+### Classification design (confirmed today)
+The workflow uploads **only the raw output**. The central automated pipeline classifies and writes results to CSV (one cell = one row).
+
+if I find a classifier bug later, I can re-run classification over the saved raw files without re-running any cells (which take way longer). Raw resolution output from package managers should be saved as evidence.
+
+
+
+### Important in the `private_resolved` rule
+An internal package counts as `private_resolved` **only if it came from the Nexus hosted repo**, NOT from the Nexus proxy repo. Proxy repo = fetching from public = still dangerous.
+
+Judging by URL alone is not always enough: for A1a group repo, all resolutions look like they came from the same group URL. Need to combine URL + resolved package version to know whether it came from the hosted side (internal version) or the proxy side (attacker version).
+
+already documented in methodology (during research proposal)
+
+
+## 3. confirm the B1 design (package manager configuration) for npm
+
+### The npm constraint
+npm does NOT support the logic "try registry A, then registry B if not found" for unscoped packages. It only has:
+- one default `registry=` line, and
+- optional `@scope:registry=` lines for scoped packages.
+
+this characterstic already reported by paper Gu et al. (2024): npm does not meet the first condition for registry-client DCA.
+
+### My constraints (kept)
+- Internal packages stay **unscoped**. Scope-based routing is a security-hardening pattern → outside my research scope ("no hardening applied").
+- Will not change my research question or variables. B1 stays at abstract level. each ecosystem realizes it in its own way. Where the realizations differ, the differences are also findings.
+
+### Decision for npm
+For B1b/B1c, write **two `registry=` lines** in `.npmrc`. This satisfies the B1 definitions ("multiple registry URLs").
+
+
+### A × B1 mapping 
+
+| A | B1a | B1b | B1c | B1d |
+|---|---|---|---|---|
+| A1a | group-public-first | Nexus + public URL | Nexus + proxy URL | no file |
+| A1b | group-private-first | Nexus + public URL | Nexus + proxy URL | no file |
+| A2  | internal-hosted    | Nexus + public URL | Nexus + proxy URL | no file |
+| A3  | internal-hosted    | Nexus + public URL | **INVALID** (no proxy repo exists) | no file |
+
+
+
+### Open question 
+Whether npm's `.npmrc` parser uses first-key-wins or last-key-wins for duplicate `registry=` keys is not yet answered. My empirical tests today failed because of shell-escaping issues with the test command. Will test properly during pilot phase.
+
+Either result is fine for the thesis:
+- First-key-wins → B1b/B1c behave like B1a → confirms the "npm has no fallback" finding.
+- Last-key-wins → for A2/A3, public packages may fail to resolve → `resolution_error` outcomes (also a valid finding).
+
+Ordering choice doesn't invalidate the matrix — it just changes what exact outcome each cell produces.
+
+
+## 4. Wrote `generate_npmrc.py` (used to generate .npmrc file)
+
+**Location:** `automation_process/config_generators/generate_npmrc.py`
+
+**Key points:**
+- `A → Nexus repo name` mapping is a dict at the top of the file, one place to change if a Nexus repo is renamed later (will not).
+- Handles all 16 A × B1 combinations correctly.
+- Raises `ValueError` for A3 × B1c (invalid config) and any unknown A or B1 
+- Returns `None` for B1d so the caller knows to skip writing a .npmrc file.
+- `__main__` 16 cells and prints the output of cells 
+
+ output for all 16 cells looks correct.
+
+
+## 5. Drafted `service-ci-nodejs.yml` (NOT tested yet)
+
+**Location:** `.github/workflows/service-ci-nodejs.yml`
+
+**Workflow structure:**
+- Triggered manually via `workflow_dispatch` with dropdown inputs: `cell_id`, `A`, `B1`, `B2`, `C1`.
+- Runs on the self-hosted runner (`runs-on: [self-hosted, thesis-runner]`).
+- Steps:
+  1. Checkout the repository.
+  2. Echo the cell inputs (for a clear record in the log).
+  3. Call `generate_npmrc.py` inline via Python, write result to `services/nodejs/.npmrc`. If B1d → delete any existing file to prevent stale state.
+  4. B2 placeholder (TODO — not implemented).
+  5. C1 placeholder (TODO — not implemented).
+  6. Run `npm install --dry-run --json` in `services/nodejs/`, save output to `<cell_id>_npm_raw.json`. `continue-on-error: true` so a resolution failure does not block the upload step.
+  7. Upload the JSON as a workflow artifact.
+
+**Not yet implemneted:**
+- B2 (version specifier): needs its own generator later (used to create package.json).
+- C1 (operation type): needs lockfile handling and possibly a different command per level.
+
+**How to test (tomorrow):**
+1. Push to repo (PAT needs `workflow` scope).
+2. Actions tab → "Service CI - Node.js" → "Run workflow".
+3. Fill dropdown: `cell_id=pilot001`, `A=A1a`, `B1=B1a`, `B2=B2a`, `C1=C1a`.
+4. Watch the run. Verify:
+   - Runner picks up the job (not stuck in "Queued").
+   - "Generate .npmrc" step prints the correct file content.
+   - "Run npm install" produces output in the log.
+   - "Upload raw resolution output" succeeds.
+5. Download the `pilot001_npm_raw` artifact from the run summary and inspect the JSON.
+
+
+
+## Commands used today
+
+```bash
+# Debugging the runner container
+docker ps -a --filter name=thesis-runner
+docker logs thesis-runner
+docker rm -f thesis-runner
+
+# Rebuilding and starting fresh
+docker build -t thesis-runner:2.335.1 infrastructure/runner/
+docker run -d --name thesis-runner \
+  -e GH_REPO_URL=placeholder \
+  -e GH_TOKEN=<fresh_registration_token> \
+  --add-host=host.docker.internal:host-gateway \
+  thesis-runner:2.335.1
+docker logs -f thesis-runner
+
+# Testing restart behavior
+docker stop thesis-runner
+docker start thesis-runner
+docker logs --tail 20 thesis-runner
+
+# Testing the generator
+python automation_process/config_generators/generate_npmrc.py
+```
+
+
+
+## Next steps
+
+1. **Test `service-ci-nodejs.yml` end-to-end** with one cell (e.g. A1a + B1a + B2a + C1a). Debug whatever comes up in the first real run.
+2. Fix the issue and properly test npm's duplicate-`registry=` behavior.
+3. Add B2 handling to the workflow (edit `package.json` version specifier).
+4. Add C1 handling (delete or keep `package-lock.json`; possibly switch the install command).
+5. Write `generate_pipini.py` (same pattern as `generate_npmrc.py`). (for python service)
+6. Write `generate_settings_xml.py` (same pattern). (for java service)
+
+
+
+## Open questions
+- **npm `.npmrc` parser behavior** (first-key-wins vs last-key-wins for duplicate `registry=` lines) — needs a proper test in pilot phase.
+- **Nexus cache invalidation between cells**: need to look up the Nexus REST API endpoint for "invalidate cache" on proxy repos.
+- **`npm ci --dry-run`** : does it actually support dry-run for C1c (rebuild with existing lockfile)? Needs verification. Fallback: `npm install --dry-run` with lockfile present.

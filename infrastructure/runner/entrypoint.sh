@@ -37,28 +37,47 @@ set -euo pipefail
 # Check the required env variables are set. -> stop the script early with clear error message
 
 : "${GH_REPO_URL:?GH_REPO_URL must be set}"
-: "${GH_TOKEN:?GH_TOKEN must be set (registration token from GitHub UI)}"
 
 
-# Set up runner name and runner labels
+
+# Set up runner name and runner labels (only needed for registration)
 RUNNER_NAME="${RUNNER_NAME:-$(hostname)}"
 RUNNER_LABELS="${RUNNER_LABELS:-thesis-runner}"
 
 
 # Register this container with GitHub
+
+
+
+
+# Check if this container has already been registered before
+# The file .credentials is written by config.sh on successful first registration. and will exist inside container
+# So next time if the container start again (not removed), it will keep the credential and doesn't need the registration again
 # flag "--replace": if a runner with this name already exists in GitHub's list, replace it. 
 # avoid "name already taken" error when restart the container.
 
-echo "[entrypoint] registering runner '${RUNNER_NAME}' with ${GH_REPO_URL}..."
-./config.sh \
-    --unattended \
-    --url "${GH_REPO_URL}" \
-    --token "${GH_TOKEN}" \
-    --name "${RUNNER_NAME}" \
-    --labels "${RUNNER_LABELS}" \
-    --replace   
+if [ -f .credentials ]; then
+    echo " .credentials found, runner already registered, skipping config.sh"
+else
+    echo " no .credentials found, registering runner '${RUNNER_NAME}' with ${GH_REPO_URL}..."
+
+    : "${GH_TOKEN:?GH_TOKEN must be set for first-time registration (get one from GitHub UI)}"
+
+    ./config.sh \
+        --unattended \
+        --url "${GH_REPO_URL}" \
+        --token "${GH_TOKEN}" \
+        --name "${RUNNER_NAME}" \
+        --labels "${RUNNER_LABELS}" \
+        --replace
+fi
 
 
+# suitable cases: 1. first start (need registration).  
+# 2. restart (container not removed), doesn't need registration token because credential file is already there
+# 3. during official experiment phase, we should fully discard cache between cells, so the runner container
+# need to be removed again and again when starting testing new cell, in this case we need to register everytime.
 
-# start the runner and keep it running.
-./run.sh 
+
+# start the runner and keep it running
+exec ./run.sh 
