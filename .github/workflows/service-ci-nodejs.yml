@@ -1,19 +1,16 @@
-# Per-service CI pipeline for the Node.js service. One run of this workflow = one experiment cell.
+# Per-service CI pipeline for Node.js service. One run of this workflow = one experiment cell
 
 # what will this workflow do:
-#   1. Receives cell inputs from the orchestrator (or manually from the UI)
+#   1. Receives cell inputs from the central automated pipeline (or manually from the github UI)
 #   2. Generates the .npmrc file using the script: automation_process/config_generators/generate_npmrc.py
 #   3. Runs resolution command: `npm install --dry-run --json` inside services/nodejs/
-#   4. Uploads the raw JSON output as an artifact for the central automated pipeline to download
+#   4. Uploads the raw JSON output as an artifact for the central automated pipeline to download and make further classification
 
-# updated design decision: Classification of results happens on the central automated pipeline, not here.
-#
+
 # not written yet:
-#B2 (version specifier)-> generator for package.json not written yet; workflow input is
-#                                accepted and echoed, but no file is modified.
-#C1 (operation type)-> workflow input is accepted and echoed, but the
-#                                pipeline always runs `npm install --dry-run --json`.
-#                                Real C1a/C1b/C1c handling will be added later.
+#B2 (version specifier)-> generator for package.json not written yet
+#C1 (CI operation type)-> workflow input is accepted and echoed, but the pipeline always runs `npm install --dry-run --json`.
+# Real C1a/C1b/C1c handling will be added later.
 
 name: Service CI - Node.js
 
@@ -21,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       cell_id:
-        description: "Cell identifier, e.g. cell001. Used in artifact filename."
+        description: "Cell identifier, e.g. cell001, which is used in artifact (resolution output) filename."
         required: true
         type: string
       A:
@@ -40,14 +37,14 @@ on:
         type: choice
         options: [B2a, B2b, B2c]
       C1:
-        description: "operation type (not applied yet)"
+        description: "CI operation type (not applied yet)"
         required: true
         type: choice
         options: [C1a, C1b, C1c]
 
 jobs:
   run-cell:
-    # Match the label set in the runner container (RUNNER_LABELS in entrypoint.sh).
+    # use self-hosted github actions runner to execute the job 
     runs-on: [self-hosted, thesis-runner]
 
     steps:
@@ -83,7 +80,7 @@ jobs:
           if content is None:
               if os.path.exists(target):
                   os.remove(target)
-              print(f"[generate_npmrc] B1d: no {target} written")
+              print(f"[generate_npmrc] variable B1d: no .npmrc file is written in {target}.")
           else:
               with open(target, "w") as f:
                   f.write(content)
@@ -94,12 +91,15 @@ jobs:
       # 4. Placeholder for B2 (version specifier).
       # will edit services/nodejs/package.json to change the version specification of internal packages, not implemented yet
       - name: Apply version specifier (B2) - TODO
-        run: echo "TODO: apply B2=${{ inputs.B2 }} to package.json"
+        run: |
+          echo "TODO: apply B2=${{ inputs.B2 }} to package.json"
+
 
       # 5. Placeholder for C1 (operation type).
-      # need to delete or keep the package-lock.json, not implemented yet.
+      # need to delete or keep the package-lock.json, not implemented yet
       - name: Apply pipeline operation (C1) - TODO
-        run: echo "TODO: apply C1=${{ inputs.C1 }} (lockfile state + command)"
+        run: |
+          echo "TODO: apply C1=${{ inputs.C1 }} (lockfile state + command)"
 
       # 6. Run dependency resolution command
       #--dry-run: resolve only, do not actually download/install
@@ -117,7 +117,7 @@ jobs:
           head -n 40 "${{ inputs.cell_id }}_npm_raw.json" || true
 
       # 7. Upload the raw JSON as an artifact. The central automated pipeline will download and classify it, and write one row to results.csv.
-      - name: Upload raw resolution output
+      - name: Upload raw resolution output of npm (package)
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.cell_id }}_npm_raw

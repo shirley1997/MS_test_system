@@ -11,17 +11,14 @@ Some Design decisions:
   this is out of scope for the research question sub-RQ1
 
 - The test Variable B1b and B1c contain TWO `registry=` lines and doesn't use scope-routing.
-# npm's .npmrc parser follows "last key wins" for duplicate keys (registry URLs), so the Nexus URL is placed LAST
-  to represent the developer's intent to use the private registry
-  (with a public URL misleadingly written above it).
+
 
 
 """
 
 
 
-# Mapping from variable A to the Nexus repo that .npmrc's `registry=` line
-# will point to (the "private-facing entry point" for the cell)
+# Mapping from variable A to the Nexus repo that .npmrc's `registry=` line will point to (the "private-facing entry point" for the cell)
 # These names exactly match the Nexus repo names configured manually in Nexus during the one-time setup step
 
 A_TO_PRIVATE_REPO = {
@@ -57,37 +54,35 @@ def generate_npmrc(A, B1, nexus_url):
     -> raise value error
     """
 
-    #1. Validate the A value and look up the private-facing repo
+    #1. Validate the A value and look up the private-hosting repo
     # get clear error message earlier if A is typed wrong
     if A not in A_TO_PRIVATE_REPO:
         raise ValueError(f"Unknown A value: {A!r}")
 
     private_repo = A_TO_PRIVATE_REPO[A]
 
-    # Build the Nexus repo URL that will appear in the `registry=` line
+    # set up the Nexus repo URL that will appear in the `registry=` line (in .npmrc file)
     private_registry_url = f"{nexus_url}/repository/{private_repo}/"
 
-    #2. construct the file content
-
+    #2. construct the file content for corresponding test variables
     # B1a: single private registry URL.
-    # Only one line of `registry=` , which points at the A-derived Nexus repo.
+    # B1a only  has one line of `registry=` , which points at the A-derived Nexus repo (group repo URL, or internal-hosted repo URL).
     if B1 == "B1a":
         return f"registry={private_registry_url}\n"
 
-    # B1b: multiple registry URLs, direct public access.
+    # B1b: multiple registry URLs with direct public access.
     if B1 == "B1b":
         return (
             f"registry={private_registry_url}\n"
             f"registry={PUBLIC_REGISTRY_URL}\n"
         )
 
-    # B1c: multiple registry URLs, public access via Nexus proxy.
-    
+    # B1c: multiple registry URLs with public access via Nexus proxy.
     if B1 == "B1c":
-        # A3 has no proxy repo -> combination is invalid.
+        # A3 has only internal-hosted repo, no proxy repo -> the combination (A3 x B1c) is invalid.
         if A == "A3":
             raise ValueError(
-                "Invalid combination: A3 has no public-proxy repo, so B1c cannot be constructed"
+                "Invalid combination: variable A3 does not have public-proxy repo, so B1c cannot be constructed"
                 
             )
         proxy_url = f"{nexus_url}/repository/{PUBLIC_PROXY_REPO}/"
@@ -96,12 +91,11 @@ def generate_npmrc(A, B1, nexus_url):
             f"registry={proxy_url}\n"    
         )
 
-    # B1d: default -> no .npmrc file is generated
-    # return None so the caller knows not to write a file.
+    # B1d: default (no .npmrc set up) -> no .npmrc file is generated -> return None 
     if B1 == "B1d":
         return None
 
-    # Unknown B1 value -> raise error
+    # if unknown B1 value -> raise error
     raise ValueError(f"Unknown B1 value: {B1!r}")
 
 
@@ -122,9 +116,9 @@ if __name__ == "__main__":
             try:
                 result = generate_npmrc(A, B1, test_nexus_url)
                 if result is None:
-                    print("(no .npmrc file -> variable B1d)")
+                    print("(no .npmrc file generated -> variable B1d)")
                 else:
-                    # print the file content of .npmrc exactly as it would be written
+                    # for each combination, print the file content of .npmrc 
                     print(result, end="")
             except ValueError as e:
                 print(f"INVALID: {e}")
