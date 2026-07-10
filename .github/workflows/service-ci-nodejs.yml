@@ -115,7 +115,6 @@ jobs:
         continue-on-error: true
         run: |
           npm install --package-lock-only 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
-          echo "first 40 lines of npm log:"
           head -n 40 "${{ inputs.cell_id }}_npm_log.txt" || true
 
       # 7. Upload the raw JSON as an artifact. The central automated pipeline will download and classify it, and write one row to results.csv.
