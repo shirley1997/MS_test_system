@@ -666,14 +666,14 @@ Ordering choice doesn't invalidate the matrix — it just changes what exact out
 - C1 (operation type): needs lockfile handling and possibly a different command per level.
 
 **How to test (tomorrow):**
-1. Push to repo (PAT needs `workflow` scope).
+1. Push to repo 
 2. Actions tab → "Service CI - Node.js" → "Run workflow".
-3. Fill dropdown: `cell_id=pilot001`, `A=A1a`, `B1=B1a`, `B2=B2a`, `C1=C1a`.
+3. Fill the input (in github UI, "run workflow"): `cell_id=pilot001`, `A=A1a`, `B1=B1a`, `B2=B2a`, `C1=C1a`.
 4. Watch the run. Verify:
-   - Runner picks up the job (not stuck in "Queued").
+   - Runner picks up the job (status changed from "Queued" to "in progress").
    - "Generate .npmrc" step prints the correct file content.
-   - "Run npm install" produces output in the log.
-   - "Upload raw resolution output" succeeds.
+   - "Run npm install" step produces output in the log.
+   - "Upload raw resolution output" succeeds. (the uploaded artifact can be downloaded)
 5. Download the `pilot001_npm_raw` artifact from the run summary and inspect the JSON.
 
 
@@ -718,6 +718,118 @@ python automation_process/config_generators/generate_npmrc.py
 
 
 ## Open questions
-- **npm `.npmrc` parser behavior** (first-key-wins vs last-key-wins for duplicate `registry=` lines) — needs a proper test in pilot phase.
+- **npm `.npmrc` package manager resolution behavior** (first-key-wins vs last-key-wins for duplicate `registry=` lines), needs a proper test in pilot phase.
 - **Nexus cache invalidation between cells**: need to look up the Nexus REST API endpoint for "invalidate cache" on proxy repos.
-- **`npm ci --dry-run`** : does it actually support dry-run for C1c (rebuild with existing lockfile)? Needs verification. Fallback: `npm install --dry-run` with lockfile present.
+
+
+# 10.07.2026
+
+## What I did today
+
+### npm B1 design reconsidered and defended (unscoped internal packages)
+- Confirmed decision to keep internal node.js packages **unscoped**
+- Reason 1: scoping is a security mitigation per npm official docs (https://docs.npmjs.com/threats-and-mitigations) → violates "no security hardening" precondition of Sub-RQ1
+- Reason 2: scoping + claiming scope on public npm makes DCA structurally difficult,the attacker cannot publish package under that scope → increase unnessasary difficulties and complexity of the thesis experiment (https://github.blog/security/supply-chain-security/avoiding-npm-substitution-attacks/ (which is linked by npm official documentation))
+
+
+### Fix npm CI pipeline bugs (multiple)
+- **YAML nested-mapping error** on placeholder echoes → fixed by adding `|` block symbols
+- **(very important) Command didn't include resolved URLs** → `npm install --dry-run --json` output has no URL field → switched to command with another flag `npm install --package-lock-only` which writes `package-lock.json`, the `resolved` field shows the resolved URL of package -> package name + version + URL can be used for determine package source
+- **remove the existing `package-lock.json` from git repo to avoid the influence to the resolution experiment** → added to `.gitignore`, kept local copy (disadvantage: runner is in a docker container, the structure of checkout repo can not be seen that easily)
+- **E401 auth error after cleanup (e.g. delete .npmrc, package-lock.json file)** → enabled anonymous read on Nexus (consistent with "no hardening" precondition) -> besides: turn off auth to nexus has no effect to the package manager resolution behavior, remove auth reduce the experiment setup load.
+
+### Rebuilt npm service CI pipeline (workflow) structure 
+- Added cleanup step at start of the CI pipeline: `rm -f .npmrc package-lock.json`, `rm -rf node_modules`, `npm cache clean --force` (this is only for development phase, in official experiment phase the whole container will be removed, cache will be discarded before next cell run)
+- Upload artifact now contains 2 files: `package-lock.json` (for resolution result classification) + npm log file (for inspect resolution errors)
+
+### npm service CI pipeline test: Ran 7 pilot cells + 1 verification test
+- Verified all major (A, B1) combinations work correctly
+- Verified invalid configuration situation (will raise ValueError for A3 × B1c)
+- Confirmed npm resolution behavior in variables B1b and B1c (see findings below)
+
+
+## Design decisions confirmed today (will not change anymore)
+
+1. situation in variable B1b and B1c with multiple registry URLs and unscoped: **npm resolves duplicate `registry=` keys as LAST-KEY-WINS** (empirically confirmed, both orderings tested using CI pipeline and inspected the pipeline worklog and uploaded artifacts)
+2. **npm resolution is NOT partically** — if any package can not be found in a registry, no `package-lock.json` will be generated, only resolution error will be shown → classifier logic confirmed
+3. **Anonymous read enabled on Nexus** 
+4. **`package-lock.json` stop commiting to git repo** , otherwise it influence the resolution output of variable C1a "initial install"
+5. **resolution Command uses flag `--package-lock-only`** (not `--dry-run` anymore ) 
+6. **pip stays as the Python package manager** . already decide during research proposal phase. no Poetry, no Pipenv, no pip-tools will be used in this test application.
+7. **Python service keeps `pyproject.toml`** , no migration to `requirements.txt` needed
+8. **C1c stays as "rebuild with existing lockfile"** : pip and Maven having no lockfile IS the finding, do NOT weaken to just "rebuild" (in this case it will increase the research scope and not clear enough what means "rebuild")
+9. **A2/A3 + B1a cells stay in matrix** : (npm behavioral finding, NOT `invalid_configuration`)
+10. **`invalid_configuration` in this thesis defined as physical impossibility** (e.g., A3 × B1c: no proxy repo exists. A3 only have one internal hosted repo.  Maven × B2c: maven doesn't support unspecified package version format)
+11. **B1b and B1c .npmrc Ordering test done in pilot phase only**: order here means is private registry URL on the first line of .npmrc, or the public /proxy URL on the first line. The official experiment will always uses private-first ordering.
+
+
+
+## Key findings from pilot phase today
+
+### 1. finding: npm cannot semantically express B1b/B1c 
+- npm parses duplicate `registry=` keys as last-key-wins
+- Under locked "private-first" ordering: private URL is effectively **overwritten** by second URL (npm will only look package in the registry which is in the second line of .npmrc)
+
+
+### other finding
+- npm resolution: when error of finding package, no package-lock.json will be generated
+- A3 + B1a and A2 + B1a always produce `resolution_error` when app has public dependencies (the public packages can not be found in private registry -> resolution error)
+- A3 + B1d will work, because when no .npmrc is there, npm will search in public registry, if no attacker package -> resolution error, if attack packages are on npm registry -> attacker's package will be solved instead of internal packages
+- A1b + B1a resolves correctly from `npm-group-private-first` 
+
+
+## Commands used today
+
+Repo cleanup for `package-lock.json`:
+```bash
+echo "services/nodejs/package-lock.json" >> .gitignore
+git rm --cached services/nodejs/package-lock.json
+git add .gitignore
+git commit -m "remove package-lock.json from repo"
+git push
+```
+
+Nexus anonymous read:
+- Administration → Security → Anonymous → check "Allow anonymous users to access the server"
+- Verified `nx-anonymous` role has `nx-repository-view-npm-*-read` privileges
+
+Trigger pilot cells after push npm service CI pipeline:
+- Enter github repo -> GitHub Actions UI → "Service CI - Node.js" → "Run workflow" → fill input, choose variables
+
+manually verify artifact and resolution result:
+- Actions run page → Artifacts → download `<cell_id>_npm_raw.zip` → extract → open `package-lock.json` → confirm `resolved` URLs of internal packages
+
+
+## Next steps 
+
+### 1. Implement `generate_version_specifier.py` for variable B2
+- Modifies `services/nodejs/package.json` per B2 value (pinned / ranged / unspecified)
+- B2a: pinned (exact version, e.g. `"1.0.0"`)
+- B2b: range (e.g. `"^1.0.0"`)
+- B2c: unspecified (e.g. `"*"` or omit version)
+- similar pattern as `generate_npmrc.py`
+
+### 2. Solve C1b precondition: publish internal package with different versions to Nexus
+- Currently only v1.0.0 published
+- another package version should be updated to test variable "package update"
+
+### 3. Add B2 handling step to npm CI pipeline (workflow)
+
+### 4. Add C1 handling step to npm CI pipeline (workflow)
+- C1a: delete `package-lock.json` before running (current cleanup already does this)
+- C1b: keep lockfile, use `npm update --package-lock-only`
+- C1c: keep lockfile, use `npm ci` : verify behavior (may actually install packages)
+- above approach not confirmed yet. need to consider the specific approach for each variable
+
+### 5. Publish attacker packages (before official experiment)
+- Document in thesis: unique names ensure no accidental resolution by others
+
+### Further steps
+- Write `generate_pipini.py` for python service
+- Write `generate_settings_xml.py` for java service
+- implement pip and Maven service CI pipeline (workflows)
+
+## Open questions 
+- Nexus cache invalidation approach between cells 
+- Does `npm ci` under `--dry-run` actually work, or does C1c always fully install?
+
