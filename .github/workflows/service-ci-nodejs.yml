@@ -115,7 +115,7 @@ jobs:
 
       # 6. Run dependency resolution command
       # here we should check the content of generated package-lock.json, it contains package name+version+resolved URL
-      # the planed command "npm install --dry-run --json" only shows package name + version
+      # the planned command "npm install --dry-run --json" only shows package name + version -> not optimal to use here
       #--json: structured output for the classification
       # We save stdout to a file and always upload it, even on non-zero exit,
       #because the result "resolution_error" should also be inspected
