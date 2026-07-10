@@ -2,7 +2,7 @@
 
 # what will this workflow do:
 #   1. Receives cell inputs from the central automated pipeline (or manually from the github UI)
-#   2. Generates the .npmrc file using the script: automation_process/config_generators/generate_npmrc.py
+#   2. Generates the .npmrc file using the script: automation_process/config_generator/generate_npmrc.py
 #   3. Runs resolution command: `npm install --dry-run --json` inside services/nodejs/
 #   4. Uploads the raw JSON output as an artifact for the central automated pipeline to download and make further classification
 
@@ -67,7 +67,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import sys, os
-          sys.path.insert(0, "automation_process/config_generators")
+          sys.path.insert(0, "automation_process/config_generator")
           from generate_npmrc import generate_npmrc
 
           A  = "${{ inputs.A }}"
