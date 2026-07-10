@@ -1,7 +1,8 @@
 # Per-service CI pipeline for Node.js service. One run of this workflow = one experiment cell
 
 # what will this workflow do:
-#   1. Receives cell inputs from the central automated pipeline (or manually from the github UI)
+  # execute one job: "run-cell", including 7 steps
+#   1. Receives cell inputs from the central automated pipeline (or manually from the github UI when we manually trigger the workflow)
 #   2. Generates the .npmrc file using the script: automation_process/config_generator/generate_npmrc.py
 #   3. Runs resolution command: `npm install --dry-run --json` inside services/nodejs/
 #   4. Uploads the raw JSON output as an artifact for the central automated pipeline to download and make further classification
@@ -102,24 +103,27 @@ jobs:
           echo "TODO: apply C1=${{ inputs.C1 }} (lockfile state + command)"
 
       # 6. Run dependency resolution command
-      #--dry-run: resolve only, do not actually download/install
+      # here we should check the content of generated package-lock.json, it contains package name+version+resolved URL
+      # the planed command "npm install --dry-run --json" only shows package name + version
       #--json: structured output for the classification
       # We save stdout to a file and always upload it, even on non-zero exit,
-      #because resolution_error is a valid experimental outcome
-      - name: Run npm install --dry-run --json
+      #because the result "resolution_error" should also be inspected
+      - name: Run npm install --package-lock-only
         id: run_npm
         working-directory: services/nodejs
         # `continue-on-error: true` so a resolution failure does not skip the artifact upload step below. 
         continue-on-error: true
         run: |
-          npm install --dry-run --json > "${{ inputs.cell_id }}_npm_raw.json" 2>&1 || true
-          echo "first 40 lines of raw output: "
-          head -n 40 "${{ inputs.cell_id }}_npm_raw.json" || true
+          npm install --package-lock-only 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
+          echo "first 40 lines of npm log:"
+          head -n 40 "${{ inputs.cell_id }}_npm_log.txt" || true
 
       # 7. Upload the raw JSON as an artifact. The central automated pipeline will download and classify it, and write one row to results.csv.
-      - name: Upload raw resolution output of npm (package)
+      - name: Upload raw resolution output of npm (package manager)
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.cell_id }}_npm_raw
-          path: services/nodejs/${{ inputs.cell_id }}_npm_raw.json
+          path: |
+            services/nodejs/package-lock.json
+            services/nodejs/${{ inputs.cell_id }}_npm_log.txt
           if-no-files-found: error
