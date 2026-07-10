@@ -72,15 +72,11 @@ def generate_npmrc(A, B1, nexus_url):
 
     # B1b: multiple registry URLs with direct public access.
     if B1 == "B1b":
-        #return (
-        #    f"registry={private_registry_url}\n"
-        #    f"registry={PUBLIC_REGISTRY_URL}\n"
-        #)
         return (
-            f"registry={PUBLIC_REGISTRY_URL}\n"
             f"registry={private_registry_url}\n"
-            
+            f"registry={PUBLIC_REGISTRY_URL}\n"
         )
+  
 
     # B1c: multiple registry URLs with public access via Nexus proxy.
     if B1 == "B1c":
