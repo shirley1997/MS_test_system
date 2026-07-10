@@ -53,6 +53,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      
+      #additional step: clean up (only for development phase)
+      - name: Clean workspace before next cell run
+        working-directory: services/nodejs
+        run: |
+          rm -f package-lock.json
+          rm -f .npmrc
+          rm -rf node_modules
+          npm cache clean --force
+          echo "workspace cleaned"
+
       # 2. Echo the cell inputs so the workflow log records which cell ran.
       - name: Echo cell inputs
         run: |
