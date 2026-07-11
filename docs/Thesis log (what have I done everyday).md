@@ -833,3 +833,75 @@ manually verify artifact and resolution result:
 - Nexus cache invalidation approach between cells 
 - Does `npm ci` under `--dry-run` actually work, or does C1c always fully install?
 
+# 11.07.2026
+
+### Built `generate_npm_version_specifier.py` (for variable B2)
+- Location: `automation_process/config_generator/`
+- Method: modifies version specifier in `services/nodejs/package.json` in the service directory (unlike `generate_npmrc.py`, which creates a new file)
+- Only changes the version specifier of internal packages. public dependencies (`express`, etc.) will stay like it originally is. so experiment environment is stable and fixed.
+- B2 mapping: `B2a="1.0.0"` (pinned), `B2b=">=1.0.0 <2.0.0"` (closed range, using primitive operator syntax), `B2c="*"` (unspecified)
+- write a test in `__main__` to print the changed content from a temp package.json file, so the real file is untouched during test:
+  `python automation_process\config_generator\generate_npm_version_specifier.py`
+
+### Updated `service-ci-nodejs.yml`
+- Added `Apply version specifier (B2)` step: calls the generator script for changing version of internal packages, prints the whole modified `package.json` in the workflow log
+- Replaced the single `npm install --package-lock-only` step (for dependency resolution) with 3 conditional C1 steps:
+  - **C1a**: initial install (`npm install --package-lock-only`)
+  - **C1b**: copy the fixed lockfile from `fixed_package_lock/npm-service-fixed.lock.json` to service directory, build the scenario that the developer already installed once. then runs `npm update command only for internal packages.
+  - **C1c**: use setup step to generates a fresh lockfile, representing initial install. then runs `npm ci` on it, represent rebuild, then upload the artifacts.
+- **C1c edge case**: if setup produces no lockfile (e.g. A3 can't resolve `express`, then resolution error), the step writes resolution error to the log and skips running `npm ci` (because rebuild will also produce the same resolution error.)
+- Artifact upload step updated to include both the main log and the C1c setup log. 
+
+### Nexus cache reset + publish v1.0.2 of internal packages (especially for package update situation)
+- Chose "delete + recreate `npm-public-proxy`" over cleanup policy or REST API script: simplest way for dev phase, doesn't touch `npm-internal-hosted`
+- Had to manually re-add `npm-public-proxy` as a member of both group repos (`npm-group-public-first`, `npm-group-private-first`) with correct ordering
+- Published internal packages with version 1.0.2 to nexus
+
+
+### Pilot cells run: all four passed
+| Cell | Result | Meaning |
+|---|---|---|
+| A1a + B1a + B2b + C1a | Resolved 1.0.2 | B2b + initial install picks highest version which fits the version range |
+| A1a + B1a + B2b + C1b | Resolved 1.0.2, express unchanged | `npm update <pkg>` command works |
+| A1a + B1a + B2b + C1c | initial install ok, `npm ci` OK, both resolve 1.0.2 | C1c steps works |
+| A3 + B1a + B2b + C1c | E404 on express, showd resolution error, no lockfile generated | Edge case |
+
+Also verified B2a distinctly resolves to 1.0.0 (not 1.0.2): B2 has observable effect.
+
+---
+
+## confirmed design decisions 
+- **npm version Range syntax for B2b: primitive operators, closed range** — `>=1.0.0 <2.0.0` for npm, analogous per ecosystem (pip: `>=1.0.0,<2.0.0`; Maven: `[1.0.0,2.0.0)`). Same semantics, different notation → cross-ecosystem consistency. other npm version range advanced syntax like Tilde, caret, X-range, hyphen documented as limitation / future work.
+- **C1 logic lives in YAML, no Python script needed**: C1 (CI operation type) chooses *which command to run*, no need to write python script. 
+- **C1c initial install failure classification**: `resolution_error`. Skips `npm ci` with printing error output. C1c can only be observed when the sinitial install phase succeeds. some A configurations (nexus repo) make rebuil not meaningful because it will produce error during initial install.
+- **C1b targets only internal packages** — `npm update <name1> <name2>` explicitly. Keeps environment fixed except for the variable being measured. need to document in methodology.
+- **set up the fixed file**: `fixed_package_lock/npm-service-fixed-lock.json`, pinned to internal packages to version 1.0.0. Represent the scenario "developer installed some time ago, now runs package update."
+- **Internal package's own `package.json`** : only changed version before republish. already describe the version change from 1.0.0 to 1.0.2 in a commit.
+
+---
+
+## Open questions (for later)
+
+- **pip / Maven C1b design**: without lockfiles, `pip install --upgrade` on an empty env behaves the same as `pip install`. Two options:
+  - **Option A**: add "simulate prior install" setup step (like C1c setup) — matrix stays uniform.
+  - **Option B**: document as `invalid_configuration` or "C1b degenerates to C1a for pip/Maven".
+  - prefer **A**. 
+- **Attacker packages** need to publish.
+- **Nexus REST API for cache invalidation** , need to implement in the central automated pipeline
+
+
+## Next steps
+
+**Priority order:**
+1. Publish attacker packages
+2. Run one B1b or B1c cell end-to-end after publish
+3. Start implementing python service CI pipeline (keep the package manager as pip):
+   - `generate_pip_version_specifier.py` (modify `pyproject.toml`)
+   - `generate_pip_config.py` (create `pip.conf`, Linux runner, INI syntax same as `pip.ini`)
+   - Note: pip does NOT auto-discover `pip.conf` in cwd: need `PIP_CONFIG_FILE=./pip.conf pip install …` in workflow
+   - `service-ci-python.yml`
+   - Decide pip C1b design (Option A vs B)
+4. **Maven service** — `generate_maven_version_specifier.py` (modify `pom.xml`), `generate_settings_xml.py`, `service-ci-java.yml`. Remember: Maven × B2c (unspecified version) invalid, Maven × C1c (rebuild with lockfile) invalid.
+5. Then central automated pipeline (Python script on Windows dev machine)
+6. **Then official experiment run.**
+

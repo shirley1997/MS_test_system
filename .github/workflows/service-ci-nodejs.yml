@@ -8,10 +8,6 @@
 #   4. Uploads the raw JSON output as an artifact for the central automated pipeline to download and make further classification
 
 
-# not written yet:
-#B2 (version specifier)-> generator for package.json not written yet
-#C1 (CI operation type)-> workflow input is accepted and echoed, but the pipeline always runs `npm install --dry-run --json`.
-# Real C1a/C1b/C1c handling will be added later.
 
 name: Service CI - Node.js
 
@@ -38,7 +34,7 @@ on:
         type: choice
         options: [B2a, B2b, B2c]
       C1:
-        description: "CI operation type (not applied yet)"
+        description: "CI operation type"
         required: true
         type: choice
         options: [C1a, C1b, C1c]
@@ -71,7 +67,7 @@ jobs:
           echo "A       = ${{ inputs.A }}"
           echo "B1      = ${{ inputs.B1 }}"
           echo "B2      = ${{ inputs.B2 }}"
-          echo "C1      = ${{ inputs.C1 }} (not yet applied)"
+          echo "C1      = ${{ inputs.C1 }} "
 
       # 3. Generate .npmrc for this cell and write it into directory services/nodejs/
       #The generator prints .npmrc file content on stdout, or nothing if variable B1d
@@ -150,7 +146,7 @@ jobs:
         run: |
           npm install --package-lock-only 2>&1 | tee "${{ inputs.cell_id }}_npm_setup_log.txt" || true
           if [ ! -f package-lock.json ]; then
-            echo "[C1c] initial install failed: no lockfile generated. Skipping npm ci." | tee "${{ inputs.cell_id }}_npm_log.txt"
+            echo "[C1c] initial install failed: no lockfile generated. skip running npm ci." | tee "${{ inputs.cell_id }}_npm_log.txt"
             exit 0
           fi
           echo "[C1c] lockfile generated after initial install, now run npm ci for rebuild"
