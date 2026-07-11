@@ -1,6 +1,6 @@
 {
   "name": "xueting-thesis-service-fasong",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Event forwarder: this package sends received events to the next service. internal package for a research-purpose microservice application",
   "main": "index.js",
   "scripts": {

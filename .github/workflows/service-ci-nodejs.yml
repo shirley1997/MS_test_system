@@ -102,7 +102,7 @@ jobs:
 
       # 4. apply B2 (version specifier): pinned / (close) ranged / unspecified
       # will directly edit services/nodejs/package.json to change the version specification of internal packages
-      - name: Apply version specifier (B2) - TODO
+      - name: Apply version specifier (B2)
         run: |
           python3 - <<'PY'
           import sys
@@ -121,7 +121,10 @@ jobs:
 
 
       # 5. Placeholder for C1 (operation type).
-      # need to delete or keep the package-lock.json, not implemented yet
+      # C1a: run without package-lock.json and without cache (done by cleanup step)
+      # C1b: package update situation: copy the fixed package-lock.json to the service directory
+      # based on this package-lock.json to update the package from the configured registry in .npmrc (according to the cell)
+      # C1c: rebuild with lockfile: run install step before apply C1c, then based on the generated package-lock.json to test C1c
       - name: Apply pipeline operation (C1) - TODO
         run: |
           echo "TODO: apply C1=${{ inputs.C1 }} (lockfile state + command)"
