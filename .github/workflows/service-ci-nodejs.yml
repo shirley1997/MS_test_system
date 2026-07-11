@@ -33,7 +33,7 @@ on:
         type: choice
         options: [B1a, B1b, B1c, B1d]
       B2:
-        description: "version specifier (not applied yet)"
+        description: "version specifier of the dependencies (only applied for internal packages)"
         required: true
         type: choice
         options: [B2a, B2b, B2c]
@@ -70,7 +70,7 @@ jobs:
           echo "cell_id = ${{ inputs.cell_id }}"
           echo "A       = ${{ inputs.A }}"
           echo "B1      = ${{ inputs.B1 }}"
-          echo "B2      = ${{ inputs.B2 }} (not yet applied)"
+          echo "B2      = ${{ inputs.B2 }}"
           echo "C1      = ${{ inputs.C1 }} (not yet applied)"
 
       # 3. Generate .npmrc for this cell and write it into services/nodejs/
@@ -100,11 +100,24 @@ jobs:
               print(content)
           PY
 
-      # 4. Placeholder for B2 (version specifier).
-      # will edit services/nodejs/package.json to change the version specification of internal packages, not implemented yet
+      # 4. apply B2 (version specifier): pinned / (close) ranged / unspecified
+      # will directly edit services/nodejs/package.json to change the version specification of internal packages
       - name: Apply version specifier (B2) - TODO
         run: |
-          echo "TODO: apply B2=${{ inputs.B2 }} to package.json"
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "automation_process/config_generator")
+          from generate_npm_version_specifier import generate_npm_version_specifier
+
+          B2  = "${{ inputs.B2 }}"
+          package_json_path = "services/nodejs/package.json"
+
+          generate_npm_version_specifier(B2, package_json_path)
+
+          print(f"[generate_npm_version_specifier] modified {package_json_path}:")
+          with open(package_json_path, "r") as f:
+              print(f.read())
+          PY
 
 
       # 5. Placeholder for C1 (operation type).
