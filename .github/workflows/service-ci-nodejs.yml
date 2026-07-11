@@ -73,8 +73,8 @@ jobs:
           echo "B2      = ${{ inputs.B2 }}"
           echo "C1      = ${{ inputs.C1 }} (not yet applied)"
 
-      # 3. Generate .npmrc for this cell and write it into services/nodejs/
-      #The generator prints file content on stdout, or nothing if variable B1d.
+      # 3. Generate .npmrc for this cell and write it into directory services/nodejs/
+      #The generator prints .npmrc file content on stdout, or nothing if variable B1d
       - name: Generate .npmrc
         run: |
           python3 - <<'PY'
@@ -111,7 +111,6 @@ jobs:
 
           B2  = "${{ inputs.B2 }}"
           package_json_path = "services/nodejs/package.json"
-
           generate_npm_version_specifier(B2, package_json_path)
 
           print(f"[generate_npm_version_specifier] modified {package_json_path}:")
@@ -120,30 +119,64 @@ jobs:
           PY
 
 
-      # 5. Placeholder for C1 (operation type).
+      # 5. Apply variable C1 (CI operation type), huge block
       # C1a: run without package-lock.json and without cache (done by cleanup step)
-      # C1b: package update situation: copy the fixed package-lock.json to the service directory
-      # based on this package-lock.json to update the package from the configured registry in .npmrc (according to the cell)
-      # C1c: rebuild with lockfile: run install step before apply C1c, then based on the generated package-lock.json to test C1c
-      - name: Apply pipeline operation (C1) - TODO
-        run: |
-          echo "TODO: apply C1=${{ inputs.C1 }} (lockfile state + command)"
-
-      # 6. Run dependency resolution command
-      # here we should check the content of generated package-lock.json, it contains package name+version+resolved URL
-      # the planned command "npm install --dry-run --json" only shows package name + version -> not optimal to use here
-      #--json: structured output for the classification
-      # We save stdout to a file and always upload it, even on non-zero exit,
-      #because the result "resolution_error" should also be inspected
-      - name: Run npm install --package-lock-only
-        id: run_npm
+      - name: Apply CI pipeline operation (C1a - initial install) and run resolution command
+        if: inputs.C1 == 'C1a'
         working-directory: services/nodejs
-        # `continue-on-error: true` so a resolution failure does not skip the artifact upload step below. 
         continue-on-error: true
         run: |
           npm install --package-lock-only 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
+      
+      # C1b: package update situation: copy the fixed package-lock.json to the service directory
+      # based on this package-lock.json to update the package from the configured registry in .npmrc (according to the cell)
+      
+      - name: Apply CI pipeline operation (C1b - package update) and run update command 
+        if: inputs.C1 == 'C1b'
+        working-directory: services/nodejs
+        continue-on-error: true
+        run: |
+          cp "${{ github.workspace }}/fixed_package_lock/npm-service-fixed-lock.json" package-lock.json
+          echo "[Apply C1b] copied fixed lockfile into npm service directory"
+          npm update xueting-thesis-event-jianding xueting-thesis-service-fasong --package-lock-only 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
 
-      # 7. Upload the raw JSON as an artifact. The central automated pipeline will download and classify it, and write one row to results.csv.
+      # C1c: rebuild with lockfile: run install command before apply C1c to generate lockfile, 
+      # then based on the generated package-lock.json to test C1c. if initial install cause resolution error -> no lockfile will generated
+      # then skip running npm ci because it is not meaningful anymore 
+      - name: Apply CI pipeline operation (C1c - rebuild with lockfile) and run update command 
+        if: inputs.C1 == 'C1c'
+        working-directory: services/nodejs
+        continue-on-error: true
+        run: |
+          npm install --package-lock-only 2>&1 | tee "${{ inputs.cell_id }}_npm_setup_log.txt" || true
+          if [ ! -f package-lock.json ]; then
+            echo "[C1c] initial install failed: no lockfile generated. Skipping npm ci." | tee "${{ inputs.cell_id }}_npm_log.txt"
+            exit 0
+          fi
+          echo "[C1c] lockfile generated after initial install, now run npm ci for rebuild"
+          npm ci 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
+
+
+      # 6. Run dependency resolution command
+      # this step is implemented before the variable C1 step is implemented (stand: 11.07.2026)
+      # here we should check the content of generated package-lock.json, it contains package name+version+resolved URL
+      # IMPORTANT: the planned command "npm install --dry-run --json" only shows package name + version -> not optimal to use here
+      # We save stdout of resolution command to a file and upload it together with package-lock.json,
+      # because the result "resolution_error" should also be inspected
+      
+      # -------------------------------------------------------------------
+      # - name: Run npm install --package-lock-only
+      #   id: run_npm
+      #   working-directory: services/nodejs
+      #   # `continue-on-error: true` so a resolution error does not skip the artifact upload step below. 
+      #   continue-on-error: true
+      #   run: |
+      #     npm install --package-lock-only 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
+      # -------------------------------------------------------------------
+
+
+      # 7. Upload the resolution output (package-lock.json + command output) as one artifact. 
+      # The central automated pipeline will download and classify it, and write one row to results.csv.
       - name: Upload raw resolution output of npm (package manager)
         uses: actions/upload-artifact@v4
         with:
@@ -151,4 +184,7 @@ jobs:
           path: |
             services/nodejs/package-lock.json
             services/nodejs/${{ inputs.cell_id }}_npm_log.txt
-          if-no-files-found: error
+            services/nodejs/${{ inputs.cell_id }}_npm_setup_log.txt
+          if-no-files-found: warn
+          #changed from error to warn. because now some listed files (like the setup log for non-C1c cells) won't exist
+          #choose "if-no-files-found: error" will fail the experiment cell (which does not involve C1c)
