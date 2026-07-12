@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 [project]
 # The package name as it appears on package registries e.g. PyPI / Nexus
 name = "xueting-thesis-event-fengfu"
-version = "1.0.0"
+version = "1.0.2"
 description = "This package add extra fields to the event. internal package for thesis microservice application"
 authors = [{ name = "Xueting Huang" }]
 # UNLICENSED-style: not open source

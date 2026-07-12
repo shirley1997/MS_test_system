@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xueting-thesis-service-zhuanfa"
-version = "1.0.0"
+version = "1.0.2"
 description = "This package sends events to the next service (Java service). internal package for thesis microservice application"
 authors = [{ name = "Xueting Huang" }]
 license = "LicenseRef-Proprietary"
