@@ -905,3 +905,60 @@ Also verified B2a distinctly resolves to 1.0.0 (not 1.0.2): B2 has observable ef
 5. Then central automated pipeline (Python script on Windows dev machine)
 6. **Then official experiment run.**
 
+# 13.07.2026
+
+## Published malicious packages (v1.0.3) to public registries
+
+
+Payload is harmless (single line, `console.log("hello world")` / `print("hello world")`) . matches the thesis proposal: DCA success depends on package manager resolution behavior, not on the payload.
+
+### npm registry: published to `registry.npmjs.org`
+
+- same Package names as internal packages -> intentionally selected, will not accidentally used by others
+- Files per package: `package.json` + `index.js`
+- Steps:
+  1. Created npm account + enabled 2FA
+  2. Logged in from terminal:
+     ```
+     npm login --registry https://registry.npmjs.org/
+     ```
+  3. Published from each package folder:
+     ```
+     npm publish --access public --registry https://registry.npmjs.org/
+     ```
+- Verified on account
+
+### PyPI: published to `pypi.org`
+
+- same Package names as internal package of python service
+- Files per package: `pyproject.toml` (no dependencies) + `README.md` + `src/<module_name>/__init__.py`
+- Note: hyphens used in package distribution name, **underscores** in Python module folder
+- Steps:
+  1. Created PyPI account + enabled 2FA 
+  2. Generated API token using pypi UI (scope: entire account)
+  
+  3. Built the malicious package from each folder:
+     ```
+     python -m build
+     ```
+     → produces `.whl` and `.tar.gz` in `dist/`
+  4. Uploaded from each folder use twine (need to activate venv of python service because all tools like twine are installed in python venv):
+     ```
+     twine upload dist\*
+     ```
+     - Username: `__token__`
+     - Password: PyPI API token (`pypi-...`)
+- Verified on account
+
+
+- Every `npm publish` / `twine upload` uses explicit `--registry` / public repository URL to prevent sending to the wrong registry.
+
+### Also published today: internal v1.0.2 for Python service in Nexus
+
+- changed version number in pyproject.toml `version = "1.0.2"` in each (described in a commit)
+- Rebuilt with `python -m build` 
+- only uploaded v1.0.2 to Nexus `pypi-internal-hosted` via `twine upload --repository-url http://localhost:8081/repository/<pypi-hosted-repo-name>/ dist\*1.0.2*`
+
+### Experimental validation
+
+Ran cell `A1a (group repo) + B1b (multiple URL) + B2b ((closed range) + C1a (initial install)` in the npm CI pipeline → both internal package names resolved to attacker version `1.0.3` from `registry.npmjs.org` 
