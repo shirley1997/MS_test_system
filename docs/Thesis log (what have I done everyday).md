@@ -962,3 +962,68 @@ Payload is harmless (single line, `console.log("hello world")` / `print("hello w
 ### Experimental validation
 
 Ran cell `A1a (group repo) + B1b (multiple URL) + B2b ((closed range) + C1a (initial install)` in the npm CI pipeline → both internal package names resolved to attacker version `1.0.3` from `registry.npmjs.org` 
+
+
+# 14.07.2026
+
+## Built `generate_pipconf.py` (for variable B1, Python service)
+
+
+- Same pattern as `generate_npmrc.py`: takes `A`, `B1`, `nexus_url` → returns pip.conf string / `None` (B1d) / raises `ValueError` (invalid combo or A3 × B1c)
+- `A → Nexus repo` mapping is a dict at top of file (single source of truth if repo renamed)
+- Runner is Ubuntu 24.04 → generated file is `pip.conf` (Linux name). Local dev on Windows uses `pip.ini` — same INI syntax, just OS-specific filename.
+
+
+## Key design decisions
+
+### 1. URLs must end with `/simple/`
+- pip talks to a PEP 503 "Simple Repository API", not the human-browsable website
+- `https://pypi.org/` = website, `https://pypi.org/simple/` = index pip actually reads
+- Same for Nexus: `/repository/<repo>/simple/`
+- Refs: PEP 503 (https://peps.python.org/pep-0503/), pip docs `--index-url` (https://pip.pypa.io/en/stable/cli/pip_install/)
+
+### 2. pip semantics ≠ npm semantics (important for later interpretation)
+- npm: last-key-wins for duplicate `registry=` → cannot express multi-URL fallback (already found in npm pilot)
+- pip: `index-url` + `extra-index-url` are queried **in parallel**, pip picks highest version across all indexes
+- → pip B1b/B1c will produce real multi-URL resolution behavior. This is the mechanism behind Birsan-style DCA on PyPI.
+- Ref: pip docs `--extra-index-url` ("Extra URLs of package indexes to use in addition to --index-url")
+
+### 3. A × B1 matrix (analogous to npm)
+| A | B1a | B1b (Nexus + pypi.org) | B1c (Nexus + proxy) | B1d |
+|---|---|---|---|---|
+| A1a | `pypi-group-public-first` | + pypi.org/simple | + `pypi-public-proxy` | no file |
+| A1b | `pypi-group-private-first` | + pypi.org/simple | + `pypi-public-proxy` | no file |
+| A2  | `pypi-internal-hosted` | + pypi.org/simple | + `pypi-public-proxy` | no file |
+| A3  | `pypi-internal-hosted` | + pypi.org/simple | **INVALID** (no proxy) | no file |
+
+- Same 1 invalid combo (A3 × B1c) and 2 failure-mode cells (A2/A3 × B1a) as npm
+
+### 4. Where the generated `pip.conf` will live in CI
+- **Written to `services/python/pip.conf`** in the workspace (mirrors `services/nodejs/.npmrc`)
+- **YAML sets `PIP_CONFIG_FILE=${{ github.workspace }}/services/python/pip.conf`** on the pip step
+- Reason: pip does **NOT** auto-discover `pip.conf` in cwd. It only reads Global / User / Site (venv) paths, or whatever `PIP_CONFIG_FILE` points to.
+- Ref: pip docs Configuration (https://pip.pypa.io/en/stable/topics/configuration/)
+- Making the path explicit in YAML also makes it visible/auditable + allows uploading `pip.conf` as an artifact alongside pip log (evidence per cell, same principle as npm)
+
+### 5. Confirmed local dev setup with `pip config debug`
+- Only active pip config file locally: `C:\Users\xueti\AppData\Roaming\pip\pip.ini` (user-level)
+- No project-level `pip.ini` in `services/python/` and no site-level one in `.venv/` — earlier log entry mentioning "project-level pip.ini" was actually the user-level file
+- Since Nexus anonymous read is now enabled, credentials in this local file are no longer needed → to be cleaned up
+- `.pypirc` (for twine publishing) lives at `%USERPROFILE%\.pypirc`, completely separate from pip install config
+
+## Commands used
+
+```powershell
+# Verify where pip actually reads config from
+pip config debug
+
+# Run and eyeball the generator (prints all 16 cells)
+python automation_process\config_generators\generate_pip_conf.py
+```
+
+## Next steps
+
+1. Write `generate_python_version_specifier.py` (B2, modifies `pyproject.toml` — pinned / range / unspecified)
+2. Draft `service-ci-python.yml`: cleanup → generate pip.conf → set `PIP_CONFIG_FILE` → resolve → upload artifact (pip.conf + pip log)
+3. Decide pip C1b design (Option A "simulate prior install" vs Option B "degenerates to C1a") — noted as open question in 11.07 log
+4. Pilot cells for Python service, mirror the 7-cell verification pattern used for npm
