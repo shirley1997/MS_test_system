@@ -1,0 +1,147 @@
+# Per-service CI pipeline for python service. One run of this workflow = one experiment cell
+
+# what will this workflow do:
+  # execute one job: "run-cell", including several steps
+#   1. Receives cell inputs from the central automated pipeline (or manually from the github UI when we manually trigger the workflow)
+#   2. Generates the pip.conf file using the script: automation_process/config_generator/generate_pipconf.py
+#   3. Runs resolution command: inside services/python/ (or update command, based on variable C1 input)
+#   4. Uploads the raw JSON output as an artifact for the central automated pipeline to download and make further classification
+
+
+
+name: Service CI - Python
+
+on:
+  workflow_dispatch:
+    inputs:
+      cell_id:
+        description: "Cell identifier, e.g. cell123, which is used in artifact (resolution output) filename."
+        required: true
+        type: string
+      A:
+        description: "Nexus repository type"
+        required: true
+        type: choice
+        options: [A1a, A1b, A2, A3]
+      B1:
+        description: "package manager config"
+        required: true
+        type: choice
+        options: [B1a, B1b, B1c, B1d]
+      B2:
+        description: "version specifier of the dependencies (only applied for internal packages)"
+        required: true
+        type: choice
+        options: [B2a, B2b, B2c]
+      C1:
+        description: "CI operation type"
+        required: true
+        type: choice
+        options: [C1a, C1b, C1c]
+
+jobs:
+  run-cell:
+    # use self-hosted github actions runner to execute the job 
+    runs-on: [self-hosted, thesis-runner]
+
+    steps:
+      # 1. Get the repo to the runner.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      
+      #additional step: clean up (only for development phase)
+      - name: Clean the filesystem before next cell run
+        working-directory: services/python
+        run: |
+          rm -f pip.conf
+          rm -f pyproject.toml
+          pip cache purge
+          echo "workspace cleaned"
+
+      # 2. Echo the cell inputs so the workflow log shows which cell ran.
+      - name: Echo cell inputs
+        run: |
+          echo "cell_id = ${{ inputs.cell_id }}"
+          echo "A       = ${{ inputs.A }}"
+          echo "B1      = ${{ inputs.B1 }}"
+          echo "B2      = ${{ inputs.B2 }}"
+          echo "C1      = ${{ inputs.C1 }} "
+
+      # 3. Generate pip.conf for this cell and write it into directory services/python/
+      #The generator script prints pip.conf file content on stdout, or nothing if variable B1d
+      - name: Generate pip.conf
+        run: |
+          python3 - <<'PY'
+          import sys, os
+          sys.path.insert(0, "automation_process/config_generator")
+          from generate_pipconf import generate_pipconf
+
+          A  = "${{ inputs.A }}"
+          B1 = "${{ inputs.B1 }}"
+          nexus_url = "http://host.docker.internal:8081"
+
+          content = generate_pipconf(A, B1, nexus_url)
+
+          target = "services/python/pip.conf"
+          if content is None:
+              if os.path.exists(target):
+                  os.remove(target)
+              print(f"[generate_pip.conf] variable B1d: no pip.conf file is written in {target}.")
+          else:
+              with open(target, "w") as f:
+                  f.write(content)
+              print(f"[generate_pip.conf] wrote {target}:")
+              print(content)
+          PY
+
+      # 4. apply B2 (version specifier): pinned / (close) ranged / unspecified
+      # will use a hard-corded pyproject.toml template to change the version specifier of internal packages
+      - name: Apply version specifier (B2)
+        run: |
+            python3 - <<'PY'
+            import sys
+            sys.path.insert(0, "automation_process/config_generator")
+            from generate_python_version_specifier import generate_python_version_specifier
+
+            B2 = "${{ inputs.B2 }}"
+            pyproject_path = "services/python/pyproject.toml"
+
+            generate_python_version_specifier(B2, pyproject_path)
+
+            print(f"[generate python version specifier] the file pyproject.toml is generated in {pyproject_path}:")
+            with open(pyproject_path, "r") as f:
+                print(f.read())
+            PY
+
+       # 5. Apply variable C1 (CI operation type), huge block
+      # C1a: run without cache (done by cleanup step), based on pyproject.toml and pip.conf  
+      - name: Apply CI pipeline operation (C1a - initial install) and run resolution command
+        if: inputs.C1 == 'C1a'
+        working-directory: services/python
+        continue-on-error: true
+        env:
+            PIP_CONFIG_FILE: ${{ inputs.B1 != 'B1d' && format('{0}/services/python/pip.conf', github.workspace) || '' }}
+        run: |
+            pip install --dry-run --ignore-installed \
+            --report "${{ inputs.cell_id }}_install-report.json" \
+            . 2>&1 | tee "${{ inputs.cell_id }}_pip_log.txt" || true
+                
+
+
+
+
+
+      # 7. Upload the resolution output (package-lock.json + command output) as one artifact. 
+      # The central automated pipeline will download and classify it, and write one row to results.csv.
+      - name: Upload raw resolution output of npm (package manager)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.cell_id }}_npm_raw
+          path: |
+            services/python/package-lock.json
+            services/python/${{ inputs.cell_id }}_npm_log.txt
+            services/python/${{ inputs.cell_id }}_npm_setup_log.txt
+          if-no-files-found: warn
+          #changed from error to warn. because now some listed files (like the setup log for non-C1c cells) won't exist
+          #choose "if-no-files-found: error" will fail the experiment cell (which does not involve C1c)

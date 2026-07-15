@@ -1023,3 +1023,101 @@ python automation_process\config_generators\generate_pip_conf.py
 2. Draft `service-ci-python.yml`
 3. Decide pip C1b design (Option A "simulate prior install" vs Option B "degenerates to C1a") 
 4. Pilot cells for Python service
+
+
+# 15.07.2026 Implement python service CI pipeline
+
+## Built `generate_python_version_specifier.py` (variable B2, Python service)
+
+Method: **generate whole `pyproject.toml` from a hardcoded template**, not partly edit of the existing file (already add the existing pyproject.toml file into .gitignore -> otherwise it will affect the experiment)
+
+Reason: TOML editing needs a package `tomlkit` . Template = pure stdlib, no install step in runner.
+
+
+### version specifier syntax comparison
+| B2 | npm form | Python form |
+|---|---|---|
+| B2a pinned | `"1.0.0"` | `==1.0.0` |
+| B2b closed range | `">=1.0.0 <2.0.0"` (space) | `>=1.0.0,<2.0.0` (**with comma**) |
+| B2c unspecified | `"*"` | `""` (only package name, no version needed) |
+
+- Refs:
+  - python version specifier syntax: https://packaging.python.org/en/latest/specifications/version-specifiers/
+  - Dependency spec / unspecified version: https://packaging.python.org/en/latest/specifications/dependency-specifiers/
+  - pyproject.toml guide: https://packaging.python.org/en/latest/guides/writing-pyproject-toml/
+- Key sentence for B2c (unspecified): "Sometimes this is very loose, just specifying a name" ([Link](https://packaging.python.org/en/latest/specifications/dependency-specifiers/))
+
+### Structural difference from npm
+- npm: `"pkg": "1.0.0"` → package name is JSON key, version is separate value → `json` module swaps values directly
+- Python: `"pkg==1.0.0"` → name + specifier in one string in a list
+
+## Built pip CI pipeline (to C1a done)
+
+### Steps done today:
+1. **Cleanup step** : clears cache between cells: (installed packages also need to be removed between cells)
+   ```bash
+   rm -f pip.conf pyproject.toml
+   pip cache purge || true
+   ```
+2. **Generate pip.conf step** :calls `generate_pip_conf(A, B1, nexus_url)`, writes to `services/python/pip.conf`, or no file generated if variable B1d
+3. **Generate pyproject.toml step** : calls `generate_python_version_specifier(B2, path)` -> generate file
+4. **C1a step (initial install )**: see command below
+
+### The pip resolution command (C1a)
+```bash
+pip install --dry-run --ignore-installed --report install-report.json .
+```
+- `--dry-run` → resolve only, no download/install
+- `--ignore-installed` 
+- `--report install-report.json` → structured JSON output per resolved package: name, version, and **`download_info.url`** -> can determine resolved package source
+- `.` → resolves packages from `pyproject.toml` in cwd
+- Piped with `2>&1 | tee` to also show human-readable log for debugging
+- Refs:
+  - https://pip.pypa.io/en/stable/cli/pip_install/
+  - https://pip.pypa.io/en/stable/reference/installation-report/
+- Docs quote: "The install command has a `--report` option that will generate a JSON report of what pip has installed. In combination with the `--dry-run` and `--ignore-installed` it can be used to _resolve_ a set of requirements without actually installing them."
+
+### Design decision: `PIP_CONFIG_FILE` as a env var set at YAML env level (not in "run: script" part)
+let this env var point to the pip.conf file inside the python service directory
+- Set as `env:` visible to the pip process. for B1a, B1b, B1c.
+- Conditional trick using `&&`/`||` (GitHub Actions has no ternary):
+  ```yaml
+  env:
+    PIP_CONFIG_FILE: ${{ inputs.B1 != 'B1d' && format('{0}/services/python/pip.conf', github.workspace) || '' }}
+  ```
+  - B1a/B1b/B1c → path to generated pip.conf
+  - B1d → empty (pip falls back to default discovery = no user config = plain https://pypi.org/simple/)
+- Ref: https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-variables#defining-environment-variables-for-a-single-workflow   (Github: for set up env in a workflow)
+
+### Artifacts uploaded per cell (need to consider)
+| Role | npm | pip |
+|---|---|---|
+| Config input | `.npmrc` | `pip.conf` |
+| Manifest input | `package.json` | `pyproject.toml` |
+| Structured resolution output | `package-lock.json` | `install-report.json` |
+| Log (for debugging) | `_npm_log.txt` | `_pip_log.txt` |
+
+
+
+## Open questions for tomorrow (C1b, C1c)
+
+### C1b (package update) — design agreed, needs to be implemented
+- Idea: 2-phase in one workflow step
+  - Phase 1 (setup, REAL package install): copy fixed file `pyproject.toml` (internal packages pinned `==1.0.0`) → `pip install --target ./deps .` → creates "already-installed 1.0.0" state on disk
+  - Phase 2 (observe package update resolution, DRY-RUN): `pip install --dry-run --target ./deps --upgrade <internal packages> .` with `PYTHONPATH=./deps` so pip's resolver sees the installed state
+- Why setup phase is necessary:
+  - Docs quote: "Without `--upgrade`, the resolver will only see the installed version as a candidate."
+  - Without prior installed state, `--upgrade` has no effect → C1b would be identical to C1a → not a distinct experimental condition
+  - **Still need to confirm empirically in pilot!!** 
+- `--upgrade-strategy` NOT specified → default option is `only-if-needed`, upgrades only listed packages, leaves everything else alone (avoid `eager`; docs explicitly warn away from `to-satisfy-only`)
+- Refs:
+  - https://pip.pypa.io/en/stable/cli/pip_install/
+  - https://pip.pypa.io/en/stable/development/architecture/upgrade-options/
+- TODO tomorrow: write C1b YAML block
+
+### C1c (rebuild with lockfile): INVALID for pip
+- pip has no native lockfile equivalent to `package-lock.json`
+- → C1c is an ecosystem-asymmetry finding
+
+- TODO tomorrow: extend validation step
+

@@ -4,7 +4,7 @@
   # execute one job: "run-cell", including 7 steps
 #   1. Receives cell inputs from the central automated pipeline (or manually from the github UI when we manually trigger the workflow)
 #   2. Generates the .npmrc file using the script: automation_process/config_generator/generate_npmrc.py
-#   3. Runs resolution command: `npm install --dry-run --json` inside services/nodejs/
+#   3. Runs resolution command inside services/nodejs/
 #   4. Uploads the raw JSON output as an artifact for the central automated pipeline to download and make further classification
 
 
@@ -51,7 +51,7 @@ jobs:
 
       
       #additional step: clean up (only for development phase)
-      - name: Clean workspace before next cell run
+      - name: Clean the filesystem before next cell run
         working-directory: services/nodejs
         run: |
           rm -f package-lock.json

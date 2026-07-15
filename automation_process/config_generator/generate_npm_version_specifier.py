@@ -6,6 +6,8 @@ public packages (e.g. express) are not touched, keep the experiment condition an
 
 import json
 from pathlib import Path
+import shutil
+import tempfile
 
 # Internal packages of npm service
 INTERNAL_PACKAGES = [
@@ -49,8 +51,7 @@ def generate_npm_version_specifier(B2, package_json_path):
 if __name__ == "__main__":
     # for inspeciftion: create a temp fil to apply these change, 
     # show the changed content of B2a, B2b, B2c without touching the real package.json yet (for debugging).
-    import shutil
-    import tempfile
+   
 
     REPO_ROOT = Path(__file__).resolve().parent.parent.parent
     source = REPO_ROOT / "services" / "nodejs" / "package.json"

@@ -1,0 +1,17 @@
+# pyproject.toml for the python service 
+# Lists the dependencies of this service, so they can be installed via pip.
+
+[project]
+name = "process-event-http-api"
+version = "1.0.0"
+description = "process event service — responsible to add extra fields to events and sends to the java service"
+requires-python = "==3.12.4"
+
+dependencies = [
+    # Use a public package: Flask web framework (similar to Express in the Node service).
+    "Flask==3.1.1",
+
+    # Internal dependencies
+    "xueting-thesis-event-fengfu==1.0.0",
+    "xueting-thesis-service-zhuanfa==1.0.0",
+]
