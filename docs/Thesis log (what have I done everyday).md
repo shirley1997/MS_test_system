@@ -983,9 +983,9 @@ Ran cell `A1a (group repo) + B1b (multiple URL) + B2b ((closed range) + C1a (ini
 - Refs: PEP 503 (https://peps.python.org/pep-0503/), pip docs `--index-url` (https://pip.pypa.io/en/stable/cli/pip_install/)
 
 ### 2. pip semantics ≠ npm semantics (important for later interpretation)
-- npm: last-key-wins for duplicate `registry=` → cannot express multi-URL fallback (already found in npm pilot)
+- npm: last-key-wins for duplicate `registry=` → cannot express multi-URL fallback (already found in npm pilot phase)
 - pip: `index-url` + `extra-index-url` are queried **in parallel**, pip picks highest version across all indexes
-- → pip B1b/B1c will produce real multi-URL resolution behavior. This is the mechanism behind Birsan-style DCA on PyPI.
+- → pip B1b/B1c will produce real multi-URL resolution behavior. 
 - Ref: pip docs `--extra-index-url` ("Extra URLs of package indexes to use in addition to --index-url")
 
 ### 3. A × B1 matrix (analogous to npm)
@@ -996,20 +996,16 @@ Ran cell `A1a (group repo) + B1b (multiple URL) + B2b ((closed range) + C1a (ini
 | A2  | `pypi-internal-hosted` | + pypi.org/simple | + `pypi-public-proxy` | no file |
 | A3  | `pypi-internal-hosted` | + pypi.org/simple | **INVALID** (no proxy) | no file |
 
-- Same 1 invalid combo (A3 × B1c) and 2 failure-mode cells (A2/A3 × B1a) as npm
+- Same 1 invalid combination (A3 × B1c) 
 
 ### 4. Where the generated `pip.conf` will live in CI
-- **Written to `services/python/pip.conf`** in the workspace (mirrors `services/nodejs/.npmrc`)
-- **YAML sets `PIP_CONFIG_FILE=${{ github.workspace }}/services/python/pip.conf`** on the pip step
+- **Written to `services/python/pip.conf`** in the workspace 
+- **YAML set envirnoment variable `PIP_CONFIG_FILE=${{ github.workspace }}/services/python/pip.conf`** so pip can find pip.conf
 - Reason: pip does **NOT** auto-discover `pip.conf` in cwd. It only reads Global / User / Site (venv) paths, or whatever `PIP_CONFIG_FILE` points to.
 - Ref: pip docs Configuration (https://pip.pypa.io/en/stable/topics/configuration/)
-- Making the path explicit in YAML also makes it visible/auditable + allows uploading `pip.conf` as an artifact alongside pip log (evidence per cell, same principle as npm)
+- implementing the path explicit in YAML also makes it visible (for debugging)
 
-### 5. Confirmed local dev setup with `pip config debug`
-- Only active pip config file locally: `C:\Users\xueti\AppData\Roaming\pip\pip.ini` (user-level)
-- No project-level `pip.ini` in `services/python/` and no site-level one in `.venv/` — earlier log entry mentioning "project-level pip.ini" was actually the user-level file
-- Since Nexus anonymous read is now enabled, credentials in this local file are no longer needed → to be cleaned up
-- `.pypirc` (for twine publishing) lives at `%USERPROFILE%\.pypirc`, completely separate from pip install config
+
 
 ## Commands used
 
@@ -1017,13 +1013,13 @@ Ran cell `A1a (group repo) + B1b (multiple URL) + B2b ((closed range) + C1a (ini
 # Verify where pip actually reads config from
 pip config debug
 
-# Run and eyeball the generator (prints all 16 cells)
+# Run the pip.conf generator (prints the file content of all cells)
 python automation_process\config_generators\generate_pip_conf.py
 ```
 
 ## Next steps
 
-1. Write `generate_python_version_specifier.py` (B2, modifies `pyproject.toml` — pinned / range / unspecified)
-2. Draft `service-ci-python.yml`: cleanup → generate pip.conf → set `PIP_CONFIG_FILE` → resolve → upload artifact (pip.conf + pip log)
-3. Decide pip C1b design (Option A "simulate prior install" vs Option B "degenerates to C1a") — noted as open question in 11.07 log
-4. Pilot cells for Python service, mirror the 7-cell verification pattern used for npm
+1. Write `generate_python_version_specifier.py` (for variable B2 , modifies `pyproject.toml` : pinned / closed range / unspecified)
+2. Draft `service-ci-python.yml`
+3. Decide pip C1b design (Option A "simulate prior install" vs Option B "degenerates to C1a") 
+4. Pilot cells for Python service
