@@ -54,9 +54,10 @@ jobs:
       - name: Clean the filesystem before next cell run
         working-directory: services/python
         run: |
-          rm -f pip.conf
-          rm -f pyproject.toml
-          pip cache purge
+          
+          rm -f pip.conf pyproject.toml pyproject_cell.toml
+          rm -rf py_dependency
+          pip cache purge || true
           echo "workspace cleaned"
 
       # 2. Echo the cell inputs so the workflow log shows which cell ran.
@@ -126,22 +127,65 @@ jobs:
             pip install --dry-run --ignore-installed \
             --report "${{ inputs.cell_id }}_install-report.json" \
             . 2>&1 | tee "${{ inputs.cell_id }}_pip_log.txt" || true
+
+
+      # Phase 1: setup (actual install of version 1.0.0 to directory ./py_dependency)
+      # copy the fixed pyproject.toml to the service directory to install 
+      - name: Apply CI pipeline operation (C1b - package update) and run update command
+        if: inputs.C1 == 'C1b'
+        working-directory: services/python
+        continue-on-error: true
+        env:
+          PIP_CONFIG_FILE: ${{ inputs.B1 != 'B1d' && format('{0}/services/python/pip.conf', github.workspace) || '' }}
+        run: |
+          
+          mv pyproject.toml pyproject_cell.toml
+          cp "${{ github.workspace }}/fixed_setup_file/fixed_pyproject.toml" pyproject.toml
+
+          pip install --target ./py_dependency --quiet . \
+            2>&1 | tee "${{ inputs.cell_id }}_pip_setup_log.txt" || true
+
+          # Sanity check: if baseline install failed, upgrade phase is meaningless
+          if [ ! -d ./py_dependency ] || [ -z "$(ls -A ./py_dependency 2>/dev/null)" ]; then
+            echo "[C1b] setup phase: initial install failed: no packages in ./py_dependency. skip upgrade phase." \
+              | tee "${{ inputs.cell_id }}_pip_log.txt"
+            mv pyproject_cell.toml pyproject.toml
+            exit 0
+          fi
+
+          # Restore the cell's actual pyproject.toml for phase 2 (this file's version specifier is needed)
+          mv pyproject_cell.toml pyproject.toml
+          echo "[C1b] internal package successfullz installed to ./py_dependency. now running upgrade"
+
+          # ---- Phase 2: observation (DRY-RUN upgrade of internal packages) ----
+          pip install --dry-run --target ./py_dependency --upgrade \
+            xueting-thesis-event-fengfu xueting-thesis-service-zhuanfa \
+            --report "${{ inputs.cell_id }}_install-report.json" \
+            . 2>&1 | tee "${{ inputs.cell_id }}_pip_log.txt" || true
                 
 
 
+      - name: Apply CI pipeline operation (C1c - rebuild with lockfile) [PLACEHOLDER]
+        if: inputs.C1 == 'C1c'
+        working-directory: services/python
+        run: |
+          echo "[C1c] Not yet implemented for pip ecosystem."
+          echo "[C1c] pip has no native lockfile equivalent to package-lock.json."
+          echo "[C1c] Marked as invalid combination — design pending." 
 
 
-
-      # 7. Upload the resolution output (package-lock.json + command output) as one artifact. 
-      # The central automated pipeline will download and classify it, and write one row to results.csv.
-      - name: Upload raw resolution output of npm (package manager)
+      # 7. Upload the resolution output (install-report.json + command outputs) as one artifact.
+#    The central automated pipeline will download and classify it, and write one row to results.csv.
+      - name: Upload raw resolution output of pip (package manager)
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.cell_id }}_npm_raw
+          name: ${{ inputs.cell_id }}_pip_raw
           path: |
-            services/python/package-lock.json
-            services/python/${{ inputs.cell_id }}_npm_log.txt
-            services/python/${{ inputs.cell_id }}_npm_setup_log.txt
+            services/python/pip.conf
+            services/python/pyproject.toml
+            services/python/${{ inputs.cell_id }}_install-report.json
+            services/python/${{ inputs.cell_id }}_pip_log.txt
+            services/python/${{ inputs.cell_id }}_pip_setup_log.txt
           if-no-files-found: warn
           #changed from error to warn. because now some listed files (like the setup log for non-C1c cells) won't exist
           #choose "if-no-files-found: error" will fail the experiment cell (which does not involve C1c)
