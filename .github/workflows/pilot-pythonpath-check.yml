@@ -1,12 +1,15 @@
-name: Pilot test - does PYTHONPATH setup needed for pip --target
+name: Pilot — PYTHONPATH necessity for pip --target
 
 on:
   workflow_dispatch:
 
 jobs:
   test:
-    runs-on: self-hosted  
+    runs-on: self-hosted   # adjust label if you use a more specific one
     steps:
+      - name: Checkout latest repo
+        uses: actions/checkout@v4
+
       - name: Sanity check — Python and pip versions
         run: |
           python3 --version
