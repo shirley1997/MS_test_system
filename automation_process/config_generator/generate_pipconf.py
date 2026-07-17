@@ -49,12 +49,16 @@ def generate_pipconf(a: str, b1: str, nexus_url: str) -> str | None:
     private_url = _nexus_index_url(nexus_url, A_TO_PRIVATE_REPO[a])
     lines = ["[global]", f"index-url = {private_url}"]
 
-    # configurate configurate second registry URL: public registry URL or Nexus pypi public proxy repo URL
+    # configure second registry URL: public registry URL or Nexus pypi public proxy repo URL
     if b1 == "B1b":
         lines.append(f"extra-index-url = {PUBLIC_PYPI_URL}")
     elif b1 == "B1c":
         lines.append(f"extra-index-url = {_nexus_index_url(nexus_url, 'pypi-public-proxy')}")
     # B1a: only one single URL for repo, no extra-index-url line needed
+
+    # Nexus runs on HTTP at host.docker.internal. pip refuses HTTP indexes by default. 
+    # This line is a constant across all cells 
+    lines.append("trusted-host = host.docker.internal")
 
     return "\n".join(lines) + "\n"
 
@@ -66,6 +70,6 @@ if __name__ == "__main__":
             print(f"\n===== {a} × {b1} =====")
             try:
                 output = generate_pipconf(a, b1, NEXUS_URL)
-                print(output if output is not None else "no pip.conf will be generated: variable B1d)")
+                print(output if output is not None else "no pip.conf will be generated: variable B1d")
             except ValueError as e:
                 print(f"INVALID: {e}")
