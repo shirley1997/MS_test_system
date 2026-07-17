@@ -1,0 +1,102 @@
+name: Pilot test - does PYTHONPATH setup needed for pip --target
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: self-hosted  
+    steps:
+      - name: Sanity check — Python and pip versions
+        run: |
+          python3 --version
+          pip --version
+
+      - name: Clean any leftovers from previous runs
+        run: |
+          rm -rf ./deps
+          rm -f test_*.json log_*.txt
+          pip cache purge || true
+
+      # Using `requests` as a neutral stand-in: known to exist at many versions
+      # on public PyPI, so no Nexus or internal-package setup is needed. The
+      # pilot is only about pip's perception of installed state.
+      - name: Baseline — install requests==2.31.0 into ./deps
+        run: |
+          pip install --target ./deps "requests==2.31.0"
+          echo "--- ./deps contents (dist-info dirs) ---"
+          ls ./deps | grep -i "^requests" || true
+
+      - name: "Test 1A — plain install (no --upgrade), NO PYTHONPATH"
+        run: |
+          pip install --dry-run --target ./deps requests \
+            --report test_1A.json 2>&1 | tee log_1A.txt || true
+
+      - name: "Test 1B — plain install (no --upgrade), WITH PYTHONPATH=./deps"
+        run: |
+          export PYTHONPATH="./deps"
+          pip install --dry-run --target ./deps requests \
+            --report test_1B.json 2>&1 | tee log_1B.txt || true
+
+      - name: "Test 2A — with --upgrade, NO PYTHONPATH"
+        run: |
+          pip install --dry-run --target ./deps --upgrade requests \
+            --report test_2A.json 2>&1 | tee log_2A.txt || true
+
+      - name: "Test 2B — with --upgrade, WITH PYTHONPATH=./deps"
+        run: |
+          export PYTHONPATH="./deps"
+          pip install --dry-run --target ./deps --upgrade requests \
+            --report test_2B.json 2>&1 | tee log_2B.txt || true
+
+      - name: Summary — logs side by side
+        run: |
+          echo "=================================================="
+          echo "LOGS (look for 'already satisfied' vs 'Collecting')"
+          echo "=================================================="
+          for t in 1A 1B 2A 2B; do
+            echo ""
+            echo "--- log_${t}.txt ---"
+            cat "log_${t}.txt" || echo "(missing)"
+          done
+
+      - name: Summary — parsed JSON reports
+        run: |
+          echo "=================================================="
+          echo "install[] entries per report (name, version)"
+          echo "=================================================="
+          python3 <<'EOF'
+          import json, os
+          for t in ["1A","1B","2A","2B"]:
+              path = f"test_{t}.json"
+              print(f"\n--- {path} ---")
+              if not os.path.exists(path) or os.path.getsize(path) == 0:
+                  print("(missing or empty — resolution likely failed)")
+                  continue
+              try:
+                  d = json.load(open(path))
+              except Exception as e:
+                  print(f"(parse error: {e})")
+                  continue
+              installs = d.get("install", [])
+              print(f"install count: {len(installs)}")
+              for p in installs:
+                  m = p.get("metadata", {})
+                  di = p.get("download_info", {}) or {}
+                  print(f"  - {m.get('name')} {m.get('version')}  from  {di.get('url','?')}")
+          EOF
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pythonpath-pilot
+          path: |
+            test_*.json
+            log_*.txt
+
+      - name: Cleanup workspace
+        if: always()
+        run: |
+          rm -rf ./deps
+          rm -f test_*.json log_*.txt

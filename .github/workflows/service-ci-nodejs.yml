@@ -132,7 +132,7 @@ jobs:
         working-directory: services/nodejs
         continue-on-error: true
         run: |
-          cp "${{ github.workspace }}/fixed_package_lock/npm-service-fixed-lock.json" package-lock.json
+          cp "${{ github.workspace }}/fixed_setup_file/npm-service-fixed-lock.json" package-lock.json
           echo "[Apply C1b] copied fixed lockfile into npm service directory"
           npm update xueting-thesis-event-jianding xueting-thesis-service-fasong --package-lock-only 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
 
