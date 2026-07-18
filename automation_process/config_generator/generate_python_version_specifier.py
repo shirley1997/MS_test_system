@@ -26,7 +26,7 @@ PYPROJECT_TEMPLATE = """\
 name = "process-event-http-api"
 version = "1.0.0"
 description = "process event service, responsible to add extra fields to events and sends to the java service"
-requires-python = ">=3.12,<3.13"
+requires-python = "==3.12.4"
 
 dependencies = [
     
