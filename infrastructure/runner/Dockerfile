@@ -21,6 +21,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # jq: useful in workflows for parsing JSON
 # libicu74: required by the .NET runtime that ships in the runner
 # sudo: the runner's install-dependencies script expects it
+# Add the Python build packages for later python 3.12.4 installation
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl \
@@ -32,6 +33,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       jq \
       libicu74 \
       sudo \
+      build-essential \
+      libssl-dev \
+      zlib1g-dev \
+      libbz2-dev \
+      libreadline-dev \
+      libsqlite3-dev \
+      libffi-dev \
+      liblzma-dev \
+      xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 
@@ -48,19 +58,57 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 
-# Python 3.12.4 + pip 25.1.1
-# Ubuntu 24.04 has Python 3.12 by default. only need to pin the package manager pip explicitly.
-# --break-system-packages is required on Ubuntu 24.04 because the system python is marked externally-managed. 
-# without this flag, error will be shown. (we can create an venv to solve this problem but not nessasary for the experiment setup)
-# source of commands: https://leimao.github.io/blog/Docker-Python-Setup/
+# desired version: Python 3.12.4 + pip 25.1.1 (fit the development environment)
+# Ubuntu 24.04 provides Python 3.12, but its apt repository does not guarantee the exact CPython patch release (3.12.4) required by the experiment.
+# Therefore, CPython 3.12.4 is built from the python official source archive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3.12 \
-      python3-pip \
-      python3-venv \
-    && python3 -m pip install --break-system-packages --ignore-installed pip==25.1.1 \
-    && python3 -m pip --version \
-    && rm -rf /var/lib/apt/lists/*
+# Exact CPython version which is required by the experiment (keep consistent with the development environment)
+ARG PYTHON_VERSION=3.12.4
+
+# Download Python 3.12.4 source release on official page
+# It contains the source code, which can be compiled on Linux
+# -f: fail on HTTP errors
+# -sS: run quietly but still show errors
+# -L: follow redirects
+# -o: save the archive file under directory /tmp
+RUN curl -fsSL "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz" \
+      -o /tmp/python.tar.xz \
+    # extract the downloaded python into directory /tmp
+    && tar -xf /tmp/python.tar.xz -C /tmp \
+
+    && cd "/tmp/Python-${PYTHON_VERSION}" \
+
+    # Prepare the build:
+    # flag --prefix install Python separately under directory /opt instead of replacing Ubuntu's system Python
+    # --with-ensurepip: install pip together with Python
+    && ./configure \
+         --prefix="/opt/python/${PYTHON_VERSION}" \
+         --with-ensurepip=install \
+
+    # Compile CPython using all available CPU cores
+    && make -j"$(nproc)" \
+
+    # Install the version-specific command python3.12
+    # altinstall avoids replacing Ubuntu's default python3 command
+    && make altinstall \
+
+    # Install the exact pip version (25.1.1)
+    # python3.12 -m pip ensures that pip belongs to this Python installation
+    && /opt/python/${PYTHON_VERSION}/bin/python3.12 \
+         -m pip install --no-cache-dir "pip==25.1.1" \
+
+    # Verify that the installed interpreter is exactly Python 3.12.4
+    && /opt/python/${PYTHON_VERSION}/bin/python3.12 --version \
+
+    # Remove the downloaded archive and source/build files
+    # They are not needed after Python is installed, keep the filesystem clean
+    && rm -rf \
+         /tmp/python.tar.xz \
+         "/tmp/Python-${PYTHON_VERSION}"
+
+# add newly installed Python directory at the beginning of PATH
+# This allows python3.12 and pip to be found in commands and workflows
+ENV PATH="/opt/python/3.12.4/bin:${PATH}"
 
 
 # install java use eclipse-temurin from Adoptium's apt repo. (openjdk docker image is deprecated)
