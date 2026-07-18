@@ -51,6 +51,7 @@ jobs:
 
       
       #additional step: clean up (only for development phase)
+      # need to explicit clean up some files (e.g. build artifacts, installed packages etc.)
       - name: Clean the filesystem before next cell run
         working-directory: services/python
         run: |
@@ -58,6 +59,7 @@ jobs:
           rm -f pip.conf pyproject.toml pyproject_cell.toml
           rm -rf py_dependency
           pip cache purge || true
+          rm -rf py_dependency build
           echo "workspace cleaned"
 
       # 2. Echo the cell inputs so the workflow log shows which cell ran.
@@ -142,8 +144,9 @@ jobs:
           mv pyproject.toml pyproject_cell.toml
           cp "${{ github.workspace }}/fixed_setup_file/fixed_pyproject.toml" pyproject.toml
 
-          pip install --target ./py_dependency --quiet . \
-            2>&1 | tee "${{ inputs.cell_id }}_pip_setup_log.txt" || true
+          pip install --target ./py_dependency --quiet \
+          --report "${{ inputs.cell_id }}_setup-install-report.json" . \
+          2>&1 | tee "${{ inputs.cell_id }}_pip_setup_log.txt" || true
 
           # Sanity check: if baseline install failed, upgrade phase is meaningless
           if [ ! -d ./py_dependency ] || [ -z "$(ls -A ./py_dependency 2>/dev/null)" ]; then
@@ -155,7 +158,7 @@ jobs:
 
           # Restore the cell's actual pyproject.toml for phase 2 (this file's version specifier is needed)
           mv pyproject_cell.toml pyproject.toml
-          echo "[C1b] internal package successfullz installed to ./py_dependency. now running upgrade"
+          echo "[C1b] internal package successfully installed to ./py_dependency. now running upgrade"
 
           # ---- Phase 2: observation (DRY-RUN upgrade of internal packages) ----
           pip install --dry-run --target ./py_dependency --upgrade \
@@ -164,14 +167,15 @@ jobs:
             . 2>&1 | tee "${{ inputs.cell_id }}_pip_log.txt" || true
                 
 
-
-      - name: Apply CI pipeline operation (C1c - rebuild with lockfile) [PLACEHOLDER]
+      
+      # C1c: pip doesn't have lockfile, the configuration combinration involve this variable is invalid
+      # for classifier: make explicit output file so "invalid combination" is a different outcome from "resolution error"
+      - name: Apply CI pipeline operation (C1c) - INVALID FOR PIP
         if: inputs.C1 == 'C1c'
         working-directory: services/python
         run: |
-          echo "[C1c] Not yet implemented for pip ecosystem."
-          echo "[C1c] pip has no native lockfile equivalent to package-lock.json."
-          echo "[C1c] Marked as invalid combination — design pending." 
+          echo "invalid_combination: python (pip) x C1c (no native lockfile)" \
+            > "${{ inputs.cell_id }}_invalid.txt"
 
 
       # 7. Upload the resolution output (install-report.json + command outputs) as one artifact.
@@ -184,8 +188,11 @@ jobs:
             services/python/pip.conf
             services/python/pyproject.toml
             services/python/${{ inputs.cell_id }}_install-report.json
+            services/python/${{ inputs.cell_id }}_setup-install-report.json
             services/python/${{ inputs.cell_id }}_pip_log.txt
             services/python/${{ inputs.cell_id }}_pip_setup_log.txt
+            services/python/${{ inputs.cell_id }}_invalid.txt
+
           if-no-files-found: warn
           #changed from error to warn. because now some listed files (like the setup log for non-C1c cells) won't exist
           #choose "if-no-files-found: error" will fail the experiment cell (which does not involve C1c)
