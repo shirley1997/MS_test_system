@@ -1121,3 +1121,75 @@ let this env var point to the pip.conf file inside the python service directory
 
 - TODO tomorrow: extend validation step
 
+# 23.07.2026 start building java service CI pipeline
+
+## What I have done today
+- Decided the Java-side config strategy: put **everything (A × B1 × B2) into `pom.xml`**, do **not** use `settings.xml`. Reason: Maven's resolver builds one "effective repo list" regardless of source. Keeping it in one file avoids risk of `settings.xml` and `pom.xml` disagreeing, and CI step becomes plain `mvn <goal>` (no `-s` flag).
+- Checked existing `settings.xml` on host machine:
+  - `Get-Item ~\.m2\settings.xml` → found at  (user-level
+  
+  - Host `settings.xml` files are irrelevant for the CI pipeline: self-hosted runner container has its own filesystem and only sees the checked-out repo.
+- Implemented `generate_pom_xml.py` (at `automation_process\config_generator\`). Hardcoded template approach, pure stdlib, similar to the style of `generate_pip_conf.py` + `generate_python_version_specifier.py` combined into one script.
+- Untrack `pom.xml` from git but kept locally -> keep experiment environment clean and stable
+
+## Design decisions and reasons
+- **A → Nexus repo mapping** :
+  - `A1a → maven-group-public-first`
+  - `A1b → maven-group-private-first`
+  - `A2 → maven-internal-hosted`
+  - `A3 → maven-internal-hosted`
+- **B1 via `<repositories>` block in `pom.xml`**:
+  - `B1a`: `<id>central</id>` override → Nexus private URL (blocks direct Maven Central) + private repo entry
+  - `B1b`: only private repo entry; super POM's Central stays (= internal + direct Central alongside)
+  - `B1c`: `<id>central</id>` override → `maven-public-proxy` URL + private repo entry (internal + Nexus proxy of Central)
+  - `B1d`: no `<repositories>` block → super POM's Central applies 
+- **B2 via `<version>` on internal deps**:
+  - `B2a`: `1.0.0` (pinned)
+  - `B2b`: `[1.0.0,2.0.0)` (closed range)
+  - `B2c`: **invalid combination in Maven** — `<version>` is a required element per POM schema. Ecosystem asymmetry finding 
+- **Invalid combinations** flagged by the generator (raise `ValueError` with descriptive message, central pipeline will skip before official experiment):
+  - `A3 × B1c` (A3 has no proxy repo)
+  - any cell with `B2c` (Maven cannot express "unspecified version")
+- **Both internal packages**version specifier need to be changed per cell.
+
+## Findings / notes worth capturing
+- **Ecosystem asymmetry #3 candidate — Maven B2c**: pip has `""`, npm has `"*"`, Maven has no true "unspecified" version. Alternatives are not equivalent:
+  - Open range `[0,)` — still a formal specifier, not "no constraint"
+  - `LATEST` / `RELEASE` — deprecated in Maven 3+, uses `maven-metadata.xml` markers, different resolution mechanism
+  - Truly empty `<version>` — rejected by POM schema (`'dependencies.dependency.version' for X is missing`)
+  - Root cause: Maven's version model treats specifiers as **declarative hard requirements**, not filters over available versions. "Unspecified" is structurally not meaningful.
+- **Maven mirror mechanism**: not used in the experiment (holds config mechanism constant across B1 cells via `<repositories>` in `pom.xml`). Worth noting descriptively in the foundation chapter as an ecosystem-descriptive observation.
+- **Maven repository lookup order** (step 4 of resolution): official documentation does not clearly specify the ordering rule for remote-repo iteration. Verify empirically in pilot phase and cite own observation.
+
+## Next steps
+- Continue B2c / version specifier discussion (read lockfile docs first).
+- Decide on `maven-lockfile` plugin for C1c (main matrix stays invalid for Maven; plugin as supplementary study, parallel to pip 26.1 plan). **Discuss with supervisor.**
+- Upload internal `1.0.2` to Nexus and attacker `1.0.3` to Maven Central 
+- Run pilot cells for the Java pipeline once the CI YAML is built.
+- Consider custom `InvalidCombination(ValueError)` exception class so the central pipeline can distinguish "structural skip" from "unknown value / caller bug" 
+
+## Reference links collected today
+### Maven official documentation
+- Setting up Multiple Repositories: https://maven.apache.org/guides/mini/guide-multiple-repositories.html
+- Super POM: https://maven.apache.org/guides/introduction/introduction-to-the-pom.html#Super_POM
+- Introduction to the Dependency Mechanism: https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html
+- Dependency Management: https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html#Dependency_Management
+- Introduction to Repositories: https://maven.apache.org/guides/introduction/introduction-to-repositories.html
+- POM Reference: https://maven.apache.org/pom.html
+- Dependency Version Requirement Specification: https://maven.apache.org/pom.html#dependency-version-requirement-specification
+- Version Order Specification: https://maven.apache.org/pom.html#version-order-specification
+- Settings Reference: https://maven.apache.org/settings.html
+- Mirror settings guide (not used, needed for foundation chapter): https://maven.apache.org/guides/mini/guide-mirror-settings.html
+- Enforcer plugin version ranges: https://maven.apache.org/enforcer/enforcer-rules/versionRanges.html
+
+### Community / supporting sources
+- GitHub issue on unspecified version (sqlbrite #193): https://github.com/square/sqlbrite/issues/193
+- Stack Overflow — Maven dependency without version: https://stackoverflow.com/questions/29476472/maven-dependency-without-version
+- OpenRewrite — list effective Maven repositories: https://docs.openrewrite.org/recipes/maven/search/effectivemavenrepositories
+- Oracle blog — Mastering Maven resolving dependencies: https://blogs.oracle.com/developers/mastering-maven-resolving-dependencies
+
+### non-official maven Lockfile Doc
+- maven-lockfile plugin: https://github.com/chains-project/maven-lockfile
+- maven-lockfile on Sonatype Central: https://central.sonatype.com/artifact/io.github.chains-project/maven-lockfile
+- Paper: Maven-Lockfile: High Integrity Rebuild of Past Java Releases: https://arxiv.org/abs/2510.00730
+
