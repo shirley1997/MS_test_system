@@ -44,3 +44,4 @@ services/nodejs/package-lock.json
 services/python/pip.conf
 services/python/pip.ini
 services/python/pyproject.toml
+services/java/pom.xml
