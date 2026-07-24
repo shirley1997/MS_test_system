@@ -1193,3 +1193,53 @@ let this env var point to the pip.conf file inside the python service directory
 - maven-lockfile on Sonatype Central: https://central.sonatype.com/artifact/io.github.chains-project/maven-lockfile
 - Paper: Maven-Lockfile: High Integrity Rebuild of Past Java Releases: https://arxiv.org/abs/2510.00730
 
+
+# 24.07.2026 continue building `generate_pom_xml.py` (used for java service CI pipeline)
+
+## What I have done today
+- Verified yesterday's `generate_pom_xml.py` output: ran it across all 48 combinations (4 A × 4 B1 × 3 B2), all 30 valid outputs are well-formed XML, all 18 invalid combinations correctly raise `ValueError` (16 with B2c, 2 with A3 × B1c).
+- Refactored `build_repositories_block()` to fix two issues:
+  - **B1a**: dropped the redundant second `<repository>` entry. Now single entry with `<id>central</id>` → private URL.
+  - **B1c**: kept `<id>central</id>` as the *override mechanism* (not renamed to `maven-public-proxy` as I initially wanted), Maven merges repositories by id — renaming would let Super POM's real Central sneak back into the effective repo list. (need to verify this in pilot phase!!)
+  - **Private repo `<id>`**: renamed from generic `nexus-private` to the actual Nexus repo name (e.g. `maven-group-public-first`) so the generated `pom.xml` self-documents which variable A it maps to.
+- **B1b**: explicit `<id>central</id>` → `https://repo.maven.apache.org/maven2` + private repo entry. Technically overrides Super POM with identical URL, but declared explicitly for readability.
+
+
+## Design decisions and reasons
+- **Uniform mechanism across B1a/B1b/B1c**: every non-B1d variant uses `<id>central</id>` override + optional private repo entry. Only URLs differ. B1d = no `<repositories>` block (which means Super POM inherit)
+- merging by id is how you overwrite Super POM's Central from inside `pom.xml` (without `settings.xml` or `<mirrors>`). This is now documented in code comments and will justified in the thesis methodology chapter.
+- **New finding candidate — id mismatch as silent misconfiguration**: if a developer names their private repo entry anything other than `central`, Super POM's Central maybe stays inherited, so their attempt to "replace Central" silently becomes "add another repo alongside Central." This makes the `<id>` itself part of variable B1 (package manager configuration), not just an implementation detail. Worth its own sub-finding. (need to verify this!!)
+
+## Verification commands (for pilot phase)
+- Show merged effective POM (verifies id-merge worked):
+  ```bash
+  mvn help:effective-pom
+  ```
+- Or targeted (only the repositories section):
+  ```bash
+  mvn help:evaluate -Dexpression=project.repositories
+  ```
+- Confirm no real network hit to Central under B1a / B1c:
+  ```bash
+  mvn -X <goal> 2>&1 | grep repo.maven.apache.org
+  ```
+  (expect zero hits when `<id>central</id>` is overridden away from real Central)
+
+
+## Next steps
+- Run pilot cells with all four B1 variants × one A value to empirically verify override behavior matches intent (especially B1a and B1c "no real Central" claim).
+- Add a small companion experiment: same URL, same block, only `<id>` differs (`central` vs. e.g. `nexus-private`) — measure whether resolution outcome changes. Turns the id-mismatch observation into a measured result.
+- Start writing the Java service CI YAML (`.github/workflows/service-ci-java.yml`), similar to the structure of the nodejs and python service pipeline.
+- Continue discussion on `maven-lockfile` plugin for C1c supplementary study.
+
+## Reference links collected today
+### Maven official
+- Super POM content(Maven 3.9.16): https://maven.apache.org/ref/3.9.16/maven-model-builder/super-pom.html
+
+### Semi-official / supporting sources for override mechanism
+- Sonatype "Maven: The Complete Reference", Ch. 3 – The Project Object Model: https://www.sonatype.com/maven-complete-reference/project-object-model#mavenref3-2-3
+  - Confirms Super POM's Central can be overridden, but only shows `settings.xml` example; does NOT explicitly document the `pom.xml` id-merge override.
+- Sonatype Central – Consume Central with Apache Maven: https://central.sonatype.org/consume/consume-apache-maven/
+  - Shows the override technique with the inline comment "Override the repository (and pluginRepository) 'central' from the Maven Super POM" — but uses `settings.xml`, not `pom.xml`.
+- Apache Maven JIRA MNG-6772: https://issues.apache.org/jira/browse/MNG-6772
+  - Developer-level confirmation of the id-merge override mechanism ("My projects define a repository with `<id>central</id>`, which is meant to specifically override the entry in the Super POM").
