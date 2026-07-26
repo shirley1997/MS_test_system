@@ -1,0 +1,186 @@
+name: Service CI - Java
+
+on:
+  workflow_dispatch:
+    inputs:
+      cell_id:
+        description: "Cell identifier, e.g. cell123, which is used in artifact (resolution output) filename."
+        required: true
+        type: string
+      A:
+        description: "Nexus repository type"
+        required: true
+        type: choice
+        options: [A1a, A1b, A2, A3]
+      B1:
+        description: "package manager config"
+        required: true
+        type: choice
+        options: [B1a, B1b, B1c, B1d]
+      B2:
+        description: "version specifier of the dependencies (only applied for internal packages)"
+        required: true
+        type: choice
+        options: [B2a, B2b, B2c]
+      C1:
+        description: "CI operation type"
+        required: true
+        type: choice
+        options: [C1a, C1b, C1c]
+
+
+# use self-hosted github actions runner to execute the job
+jobs:
+  run-cell:
+    runs-on: [self-hosted, thesis-runner]
+
+    steps:
+      # 1. retrieve the git repo to the runner
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # additional step: clean up (only for development phase)
+      # Maven-specific note: we keep the shared ~/.m2/repository so Maven plugins and public deps
+      # stay cached across cells (fast). But we purge the internal packages' cached artifacts,
+      # so each cell starts with no "already-resolved" internal package state.
+      
+      - name: Clean the filesystem before next cell run
+        working-directory: services/java
+        run: |
+          rm -f pom.xml pom_cell.xml
+          rm -rf target
+          rm -f ${{ inputs.cell_id }}_*.txt ${{ inputs.cell_id }}_*.json
+          rm -rf ~/.m2/repository/com/xueting/thesis || true
+          echo "workspace cleaned (internal packages cleaned from ~/.m2, plugins + public dependencies kept)"
+
+      # 2. Echo the cell inputs so the workflow log shows which cell ran.
+      - name: Echo cell inputs
+        run: |
+          echo "cell_id = ${{ inputs.cell_id }}"
+          echo "A       = ${{ inputs.A }}"
+          echo "B1      = ${{ inputs.B1 }}"
+          echo "B2      = ${{ inputs.B2 }}"
+          echo "C1      = ${{ inputs.C1 }} "
+
+      # 3. Generate pom.xml (setup combination A + B1 + B2 in one file, no settings.xml used).
+      # The generator raises ValueError for invalid combinations:
+      # - A3 x B1c (A3 has no proxy repo)
+      # - any cell with B2c (Maven cannot express "unspecified version")
+      # On ValueError, write _invalid.txt and skip resolution steps below.
+      - name: Generate pom.xml
+        id: gen_pom
+        run: |
+            python3 - <<'PY'
+            import sys, os
+            sys.path.insert(0, "automation_process/config_generator")
+            from generate_pom_xml import generate_pom_xml
+
+            A  = "${{ inputs.A }}"
+            B1 = "${{ inputs.B1 }}"
+            B2 = "${{ inputs.B2 }}"
+            nexus_url = "http://host.docker.internal:8081"
+
+            target = "services/java/pom.xml"
+            invalid_marker = "services/java/${{ inputs.cell_id }}_invalid.txt"
+
+            try:
+                content = generate_pom_xml(A, B1, B2, nexus_url)
+                with open(target, "w") as f:
+                    f.write(content)
+                print(f"[generate_pom_xml] wrote {target}:")
+                print(content)
+            except ValueError as e:
+                with open(invalid_marker, "w") as f:
+                    f.write(f"invalid_combination: A={A}, B1={B1}, B2={B2} -> {e}\n")
+                print(f"[generate_pom_xml] invalid combination detected: {e}")
+            PY
+
+     # 4. Apply variable C1 (CI operation type)
+
+      # C1a: initial resolve 
+      #      dependency:tree walks the transitive graph and downloads only POMs (small XML),
+      # will not download the JARs -> fast, no build/install. Output:
+      # - "${cell_id}_dependency-tree.json" -> structured tree (name + version, JSON since plugin 3.7.0)
+      # - "${cell_id}_mvn_log.txt"          -> "Downloading from <repoId>: <URL>" lines(repoId identifies the package resolution source)
+      - name: Apply CI pipeline operation (C1a - initial install) and run resolution command
+        if: inputs.C1 == 'C1a'
+        working-directory: services/java
+        continue-on-error: true
+        run: |
+          # Skip if generator marked this combination invalid (no pom.xml written).
+          if [ ! -f pom.xml ]; then
+            echo "[C1a] skipping: no pom.xml (invalid A/B1/B2 combination)."
+            exit 0
+          fi
+ 
+          mvn -B org.apache.maven.plugins:maven-dependency-plugin:3.11.0:tree \
+            -DoutputFile="${{ inputs.cell_id }}_dependency-tree.json" \
+            -DoutputType=json \
+            2>&1 | tee "${{ inputs.cell_id }}_mvn_log.txt" || true
+ 
+      # C1b (package update): 2-phase (setup + update)
+      #   Phase 1 (setup, REAL resolve of pinned 1.0.0): swap pom.xml -> fixed_pom.xml (pinned <version>1.0.0</version>),
+      #           run dependency:tree -> populates ~/.m2 with 1.0.0 POMs (and metadata).
+      #   Phase 2 (update, resolve with cell's B2 specifier): restore cell pom.xml,
+      #           run dependency:tree with -U to force metadata re-check against remotes.
+      - name: Apply CI pipeline operation (C1b - package update) and run update command
+        if: inputs.C1 == 'C1b'
+        working-directory: services/java
+        continue-on-error: true
+        run: |
+          # Skip if generator marked this combination invalid (no pom.xml written).
+          if [ ! -f pom.xml ]; then
+            echo "[C1b] skipping: no pom.xml (invalid A/B1/B2 combination)."
+            exit 0
+          fi
+ 
+          #Phase 1: setup (resolve internal package (with version 1.0.0) 
+          mv pom.xml pom_cell.xml
+          cp "${{ github.workspace }}/fixed_setup_file/fixed_pom.xml" pom.xml
+ 
+          mvn -B org.apache.maven.plugins:maven-dependency-plugin:3.11.0:tree \
+            -DoutputFile="${{ inputs.cell_id }}_setup-dependency-tree.json" \
+            -DoutputType=json \
+            2>&1 | tee "${{ inputs.cell_id }}_mvn_setup_log.txt" || true
+ 
+          # Sanity check: if initial resolve failed, update phase is meaningless.
+          if [ ! -s "${{ inputs.cell_id }}_setup-dependency-tree.json" ]; then
+            echo "[C1b] setup phase: initial resolve failed, no dependency tree produced. skip update phase." \
+              | tee "${{ inputs.cell_id }}_mvn_log.txt"
+            mv pom_cell.xml pom.xml
+            exit 0
+          fi
+ 
+          # Restore the cell's actual pom.xml for phase 2
+          echo "[C1b] internal packages successfully resolved into ~/.m2. now running update resolve."
+ 
+          #Phase 2: update (resolve with cell's B2 specifier, -U forces metadata re-check) ----
+          mvn -B -U org.apache.maven.plugins:maven-dependency-plugin:3.11.0:tree \
+            -DoutputFile="${{ inputs.cell_id }}_dependency-tree.json" \
+            -DoutputType=json \
+            2>&1 | tee "${{ inputs.cell_id }}_mvn_log.txt" || true
+ 
+      # C1c: rebuild with lockfile (maven doesn't have native lockfile)
+      # For classifier: make explicit output file so "invalid combination" is a different outcome from "resolution error".
+      - name: Apply CI pipeline operation (C1c) - INVALID FOR MAVEN
+        if: inputs.C1 == 'C1c'
+        working-directory: services/java
+        run: |
+          echo "invalid_combination: java (maven) x C1c (no native lockfile in maven)" \
+            > "${{ inputs.cell_id }}_invalid.txt"
+ 
+      # 6. Upload the resolution output (log + dependency tree + pom + invalid marker).
+      #    The central automated pipeline will download and classify it, and write one row to results.csv.
+     
+      - name: Upload raw resolution output of maven 
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.cell_id }}_mvn_raw
+          path: |
+            services/java/pom.xml
+            services/java/${{ inputs.cell_id }}_mvn_log.txt
+            services/java/${{ inputs.cell_id }}_mvn_setup_log.txt
+            services/java/${{ inputs.cell_id }}_dependency-tree.json
+            services/java/${{ inputs.cell_id }}_setup-dependency-tree.json
+            services/java/${{ inputs.cell_id }}_invalid.txt
+          if-no-files-found: warn
