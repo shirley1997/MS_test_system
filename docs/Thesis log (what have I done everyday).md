@@ -1261,3 +1261,57 @@ Both packages now show versions **1.0.0** and **1.0.2** in Nexus
 
 ## Lesson Learned
 Always make sure the Nexus container is running **before** deploying.
+
+
+# 26.07.2026 Build Java service CI pipeline (`.github/workflows/service-ci-java.yml`)
+
+## What I have done today
+- Built the Java service CI YAML, use the similar structure and steps of the Python, nodejs pipeline (same steps, same input variables A / B1 / B2 / C1, same artifact uploaded). 
+- not tested yet
+- **Cleanup step**: shared `~/.m2/repository` kept across cells (plugins + public deps stay cached → fast), only internal packages purged between cells:
+  ```bash
+  rm -rf ~/.m2/repository/<INTERNAL_GROUPID_PATH> || true
+  ```
+- **Generate `pom.xml` step**: calls `generate_pom_xml(A, B1, B2, nexus_url)`. On `ValueError` (A3×B1c or any B2c), writes `_invalid.txt` instead and moves on, no `pom.xml` written for that cell.
+- **C1a step** (initial resolve)
+  ```bash
+  mvn -B org.apache.maven.plugins:maven-dependency-plugin:3.11.0:tree \
+    -DoutputFile="<cell_id>_dependency-tree.json" \
+    -DoutputType=json
+  ```
+- **C1b step** (2-phase, first install, then update)
+  - Phase 1: change `pom.xml` → `fixed_pom.xml` (pinned `1.0.0`), run `dependency:tree` → populates `~/.m2` with 1.0.0 state.
+  - Phase 2: restore cell `pom.xml` (with B2 specifier), run `dependency:tree` with `-U` to force metadata re-check against Nexus.
+- **C1c step** (INVALID for Maven main matrix, mirrors Python C1c): writes `_invalid.txt` inline. No separate `check_invalid` step (removed for symmetry with Python pipeline).
+- **Upload artifacts**: `pom.xml`, mvn logs, dep-tree JSONs, invalid marker.
+
+## Design decisions and reasons
+- **`dependency:tree` instead of `dependency:resolve`**: walks transitive graph, downloads POMs (small XML) but not JARs → fast, no package build/install. Closest thing to pip and npm's `--dry-run` for Maven.
+- **JSON output**: supported since `maven-dependency-plugin` 3.7.0. easier for the central automated pipeline's classifier than other format
+- **dependency Plugin version pinned to 3.11.0** through fully-qualified `groupId:artifactId:version:goal` form. Reason: short-form `dependency:tree` uses whichever version Super POM binds → could be < 3.7.0 → JSON silently fails. Also matches the "pin every tool version" rule from 26.06.
+- **`-B` (batch mode)**: no ANSI colors, no progress bar animation → clean, grep-friendly CI logs (needed for parsing `Downloading from <repoId>: <URL>` lines).
+- **`-U` in C1b phase 2**: forces metadata re-check. Without it, client-side release-metadata cache (default 24h TTL) could silently short-circuit the update, even though Nexus proxy's metadata TTL is already 0.
+- **Shared `~/.m2` + remove internal packages only before each cell run**: keeps plugins/public deps cached (fast pilot iteration), but forces re-resolution of internal packages every cell.
+- **Classifier signal**: (1) `dependency-tree.json` → resolved package name + version (2) `mvn_log.txt` → `Downloading from <repoId>: <URL>` lines → resolution source.
+
+## Open question / to discuss with supervisor 
+- **C1c strategy**: whether to keep C1c invalid for pip and Maven (current) or include lockfile technologies in the **main matrix** — npm `package-lock.json` (native) + pip `pylock.toml` (pip v26, PEP 751, experimental) + Maven `maven-lockfile` plugin (third-party, from arxiv paper 2510.00730). Trade-off:
+  - Adds ecosystem coverage + "lockfile maturity " as an explicit finding.
+  - Costs: rebuild runner container image (for new pip version), read + defend maven-lockfile plugin in methodology chapter, add paper to related work. add short paragraph to foudation chapter
+  - Rough estimate: ~3–5 days for pip pylock, ~4–6 days for maven-lockfile.
+
+## Next steps
+
+- [ ] **Discuss C1c lockfile strategy with supervisor** before touching pipelines further.
+- [ ] **Run pilot cells** for the current Java CI pipeline:
+  - Start with a valid combination, e.g. `A=A1a, B1=B1a, B2=B2a, C1=C1a`.
+  - Then verify invalid combinations correctly produce `_invalid.txt`: `A3×B1c`, any `B2c`, any `C1c`.
+- [ ] **Verify override behavior empirically** (from 24.07 next steps, still open):
+  ```bash
+  mvn help:effective-pom
+  mvn -X <goal> 2>&1 | grep repo.maven.apache.org
+  ```
+
+## Reference links collected today
+- Maven Dependency Plugin `tree` mojo (JSON output format since 3.7.0): https://maven.apache.org/plugins/maven-dependency-plugin/tree-mojo.html
+- Dependency tree output formats: https://maven.apache.org/plugins/maven-dependency-plugin/examples/tree-mojo.html
