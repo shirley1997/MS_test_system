@@ -10,7 +10,7 @@
     <!-- Basic information of this internal package -->
     <groupId>com.xueting.thesis</groupId>
     <artifactId>xueting-thesis-event-juhe</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.2</version>
     <!--Build package in a .jar file -->
     <packaging>jar</packaging>
 

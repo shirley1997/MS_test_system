@@ -10,7 +10,7 @@
     <!-- Basic information of this internal package -->
     <groupId>com.xueting.thesis</groupId>
     <artifactId>xueting-thesis-result-fanhui</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.2</version>
     <packaging>jar</packaging>
 
     <name>xueting-thesis-result-fanhui</name>

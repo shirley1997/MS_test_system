@@ -1243,3 +1243,21 @@ let this env var point to the pip.conf file inside the python service directory
   - Shows the override technique with the inline comment "Override the repository (and pluginRepository) 'central' from the Maven Super POM" — but uses `settings.xml`, not `pom.xml`.
 - Apache Maven JIRA MNG-6772: https://issues.apache.org/jira/browse/MNG-6772
   - Developer-level confirmation of the id-merge override mechanism ("My projects define a repository with `<id>central</id>`, which is meant to specifically override the entry in the Super POM").
+
+# 25.07.2026 Publishing java internal Packages (version 1.0.2) to Nexus
+
+## Goal
+Publish two internal Java packages to self-hosted Nexus as version **1.0.2** (previously published as 1.0.0).
+
+## Steps 
+
+- **Bumped the version** in each `pom.xml` from `1.0.0` to `1.0.2`
+- **Checked `distributionManagement`** in `pom.xml` points to my Nexus repo (maven-internal-hosted)
+- **Started the Nexus container** (forgot at first → got `Connection refused` error)
+- **Ran `mvn clean deploy`** in each package directory
+
+## Result
+Both packages now show versions **1.0.0** and **1.0.2** in Nexus 
+
+## Lesson Learned
+Always make sure the Nexus container is running **before** deploying.
