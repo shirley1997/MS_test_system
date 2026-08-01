@@ -1315,3 +1315,50 @@ Always make sure the Nexus container is running **before** deploying.
 ## Reference links collected today
 - Maven Dependency Plugin `tree` mojo (JSON output format since 3.7.0): https://maven.apache.org/plugins/maven-dependency-plugin/tree-mojo.html
 - Dependency tree output formats: https://maven.apache.org/plugins/maven-dependency-plugin/examples/tree-mojo.html
+
+
+# 01.08.2026 Java namespace verification question (before uploading attacker packages to Maven Central)
+
+## What I have done today
+- Investigated Maven Central's **namespace verification rule**. Confirmed there are only **two** verification methods:
+  1. **DNS TXT record** — for domain-shaped groupIds like `com.xueting.thesis`. Requires proof of domain ownership.
+  2. **Code-hosting verification** — for `io.github.<user>`, `io.gitlab.<user>`, `io.bitbucket.<user>`, `io.gitee.<user>`. Auto-verified via OAuth if you signed up on Sonatype Central with that platform.
+- Ruled out DNS-based verification for the experiment: I don't own `xueting.com`, and buying a short-term domain would expire → harms reproducibility of the thesis artifacts.
+- Ruled in **code-hosting verification with my own GitHub account** → groupId `io.github.shirley1997.thesis`.
+- Worked through the story problem: since `io.github.<user>.*` namespaces are structurally 1:1 bound to a GitHub identity, the ONLY way this collision (of namespace) can arise in the real world is via GitHub account takeover, which is **dependency hijacking**, not Birsan-style dependency confusion. I initially thought this made the experiment invalid.
+- Resolved this by **reframing the threat model** to be resolver-centric rather than attack-centric (details below).
+
+## Design decision
+- **Use `io.github.shirley1997.thesis` as groupId for BOTH internal packages (published to Nexus) AND attacker packages (published to Maven Central).**
+  - Reason: my GitHub account is the only namespace I can verify persistently and reproducibly, without any recurring cost or dependency on domain renewal.
+  - Reason: dual-role of the same identity is an experimental artifact, not a modeling claim about the attacker's real-world capability.
+- **Reframe threat model from attack-centric to resolver-centric.**
+  - Instead of claiming "the attacker performs dependency confusion", claim: *the resolver operates on a collision state at Maven Central; multiple upstream threat models (Birsan-style confusion, dependency hijacking, insider threats, expired-domain namespace transfer) all produce the same collision state; resolver behavior is invariant to which mechanism caused the collision*.
+  - This makes using my own account for both roles fully consistent with the threat model.
+
+## Where to justify in the thesis (chapter mapping)
+- **Foundation chapter** (short paragraph): introduce dependency confusion (Birsan) and explain why Maven's hierarchical + verified namespace is structurally more resistant than npm/PyPI's flat namespaces. → ecosystem asymmetry finding candidate.
+- **Threat model section** (early in methodology chapter): explicit resolver-centric framing. State clearly what is in scope (resolver behavior given a collision) and what is out of scope (registration-side attacks: how the collision was created, MFA bypass, PGP forgery, Sigstore forgery, etc.).
+- **Implementation chapter** (short note when documenting Maven Central publishing): one or two sentences explaining that `io.github.shirley1997.thesis` was verified via GitHub OAuth code-hosting verification, and that the same namespace is used for both victim and attacker packages as motivated in the threat model section.
+
+## Sub-finding candidate (internal ecosystem asymmetry within Maven Central)
+
+  - Code-hosting namespaces are 1:1 bound to an OAuth-verifiable account → inherit account-security risks (takeover, session hijack).
+  - Domain-shaped namespaces are bound to a transferable domain → inherit domain-market risks (expiry, resale, DNS takeover).
+- Worth noting in the findings chapter as an INTERNAL asymmetry within Maven Central, orthogonal to the cross-ecosystem asymmetries with npm/PyPI.
+
+## Next steps
+- [ ] **Change groupId** in both internal package `pom.xml` files: `com.xueting.thesis` → `io.github.shirley1997.thesis`. Then republish versions `1.0.0` and `1.0.2` to Nexus.
+- [ ] Verify the namespace on Sonatype Central Portal:
+  - Sign in with GitHub OAuth on https://central.sonatype.com
+  - Check for the auto-verified `io.github.shirley1997` namespace on the Namespaces page
+- [ ] Prepare the attacker version of internal packages (bump to `1.0.3`, keep same groupId + artifactIds, distinguishable content for the classifier).
+- [ ] Configure `distributionManagement` in attacker package `pom.xml` to point to Sonatype Central (staging).
+- [ ] Add PGP signing (Maven Central requires signed artifacts) — new step, not needed for Nexus deploys.
+- [ ] `mvn clean deploy` the attacker packages to Maven Central staging, then release.
+
+## Reference links collected today
+- Why verify project ownership (Sonatype FAQ): https://central.sonatype.org/faq/verify-ownership/
+- Register a namespace (Sonatype docs): https://central.sonatype.org/register/namespace/
+  - Notes the automatic `io.github.<username>` provisioning when signing up via GitHub OAuth
+  - Documents the two verification paths: DNS TXT for domains, code-hosting for `io.github` / `io.gitlab` / etc.
