@@ -1362,3 +1362,142 @@ Always make sure the Nexus container is running **before** deploying.
 - Register a namespace (Sonatype docs): https://central.sonatype.org/register/namespace/
   - Notes the automatic `io.github.<username>` provisioning when signing up via GitHub OAuth
   - Documents the two verification paths: DNS TXT for domains, code-hosting for `io.github` / `io.gitlab` / etc.
+
+
+
+# 02.08.2026 upload package to maven & republish internal java package using new groupID
+
+## Published public Java packages to Maven Central
+
+- Logged in to [Maven Central Portal](https://central.sonatype.com/) with my GitHub account.
+- Verified the namespace `io.github.shirley1997` by following the [namespace verification guide](https://central.sonatype.org/register/namespace/).
+  - This namespace also permits the child namespace `io.github.shirley1997.thesis`.
+- Prepared both harmless public research packages as version `1.0.3`:
+  - `io.github.shirley1997.thesis:xueting-thesis-event-juhe:1.0.3`
+  - `io.github.shirley1997.thesis:xueting-thesis-result-fanhui:1.0.3`
+- Updated each `pom.xml` according to the [Maven Central publishing requirements](https://central.sonatype.org/publish/requirements/):
+  - Removed the internal Nexus `<distributionManagement>` block.
+  - Added project URL, MIT licence, developer information, and GitHub SCM information.
+  - Added source JAR, Javadoc JAR, artifact signing, and Central publishing configuration.
+- Used these Maven plugins:
+  - [Maven Source Plugin](https://maven.apache.org/plugins/maven-source-plugin/usage.html) to generate `-sources.jar`.
+  - [Maven Javadoc Plugin](https://maven.apache.org/plugins-archives/maven-javadoc-plugin-3.8.0/usage.html) to generate `-javadoc.jar` (plugin version `3.12.0` was used).
+  - [Maven GPG Plugin](https://maven.apache.org/plugins/maven-gpg-plugin/usage.html) to sign the POM and JAR files.
+  - [Central Publishing Maven Plugin](https://central.sonatype.org/publish/publish-portal-maven/) to upload packages to the Central Portal.
+- Installed [GnuPG](https://gnupg.org/download/index.html#sec-1-2), generated a signing key, and uploaded only its public key to keyserver for verification:
+
+  ```powershell
+  gpg --keyserver keyserver.ubuntu.com --send-keys KEY-ID-STRING
+  ```
+
+  Output:
+
+  ```text
+  gpg: sending key 62B0CB49CA62BECB to hkp://keyserver.ubuntu.com
+  ```
+
+- Created the Maven Central user token `xueting-maven-publishing` on the [Central Portal token page](https://central.sonatype.com/usertoken) and stored it locally in `~/.m2/settings.xml` under server ID `central`.
+- Verified both packages before deployment:
+
+  ```powershell
+  mvn clean verify
+  ```
+
+  Important output:
+
+  ```text
+  Signer 'gpg' is signing 4 files with key default
+  BUILD SUCCESS
+  ```
+
+  Four signature files were generated for each package: main JAR, sources JAR, Javadoc JAR, and POM.
+- Committed only source-controlled files such as `.gitignore`, `README.md`, `LICENSE`, `pom.xml`, and `src/`.
+  - Ignored `**/target/` and did not commit generated JARs, `.asc` files, credentials, tokens, or private GPG material.
+- Uploaded each package for validation:
+
+  ```powershell
+  mvn clean deploy
+  ```
+
+- Kept `<autoPublish>false</autoPublish>` as a safety decision.
+  - Reason: the Central Portal validates the deployment first, so the coordinates can be checked before the permanent publication.
+- Checked both coordinates in the Central Portal and manually clicked **Publish**.
+  - Result: both public version `1.0.3` packages were successfully published.
+
+## Rebuilt and republished internal Nexus packages
+
+- Design decision: internal and public packages must use the same `groupId` and `artifactId` for the DCA experiment; only their versions and repository locations differ.
+- Changed the internal package coordinates from `com.xueting.thesis` to:
+
+  ```text
+  io.github.shirley1997.thesis
+  ```
+
+- Final version design:
+  - Internal Nexus packages: `1.0.0` and `1.0.2`.
+  - Public Maven Central packages: `1.0.3`.
+- Deleted the four old components from `maven-internal-hosted`, but kept the Nexus repository itself.
+- Changed Java source directories and package declarations to:
+
+  ```text
+  src/main/java/io/github/shirley1997/thesis/
+  ```
+
+  ```java
+  package io.github.shirley1997.thesis;
+  ```
+
+- Deleted generated `target/` directories with `mvn clean`; Maven regenerated them during the builds.
+- Built, tested, and deployed versions `1.0.0` and `1.0.2` of both internal packages:
+
+  ```powershell
+  mvn clean test
+  mvn deploy
+  ```
+
+- Successful Nexus deployment output included:
+
+  ```text
+  Uploaded to nexus-internal: http://localhost:8081/repository/maven-internal-hosted/io/github/shirley1997/thesis/xueting-thesis-event-juhe/maven-metadata.xml
+  BUILD SUCCESS
+  ```
+
+- Verified in Nexus that both packages contain versions `1.0.0` and `1.0.2` under `io/github/shirley1997/thesis/`.
+
+## Configuration-isolation decision
+
+- Maven automatically reads the current machine's `~/.m2/settings.xml`, but the Windows settings file is not available inside the GitHub Actions runner container.
+- Therefore, the local Maven Central credentials do not affect the experiment pipeline.
+- Repository blocks generated in the service `pom.xml` control dependency resolution during the experiment.
+- Before the official experiment, the runner should still be checked for unexpected user settings:
+
+  ```bash
+  ls -la ~/.m2
+  mvn help:effective-settings
+  ```
+
+##  Java service rebuild
+
+- Changed both internal dependency declarations in the Java service to the new group ID:
+
+  ```xml
+  <groupId>io.github.shirley1997.thesis</groupId>
+  ```
+
+- Planned clean rebuild commands:
+
+  ```powershell
+  mvn clean
+  Remove-Item -Recurse -Force "$HOME\.m2\repository\io\github\shirley1997\thesis\xueting-thesis-event-juhe" -ErrorAction SilentlyContinue
+  Remove-Item -Recurse -Force "$HOME\.m2\repository\io\github\shirley1997\thesis\xueting-thesis-result-fanhui" -ErrorAction SilentlyContinue
+  mvn -U clean verify
+  mvn dependency:tree
+  ```
+
+
+- After a successful build, the Spring Boot service can be started with:
+
+  ```powershell
+  mvn clean package
+  java -jar target\<service-jar-name>.jar
+  ```

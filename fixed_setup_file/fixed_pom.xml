@@ -4,7 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.xueting.thesis</groupId>
+    <groupId>io.github.shirley1997.thesis</groupId>
     <artifactId>aggregate-event-http-api</artifactId>
     <version>1.0.0</version>
     <packaging>jar</packaging>
@@ -28,12 +28,12 @@
             <version>7.2.2</version>
         </dependency>
         <dependency>
-            <groupId>com.xueting.thesis</groupId>
+            <groupId>io.github.shirley1997.thesis</groupId>
             <artifactId>xueting-thesis-event-juhe</artifactId>
             <version>1.0.0</version>
         </dependency>
         <dependency>
-            <groupId>com.xueting.thesis</groupId>
+            <groupId>io.github.shirley1997.thesis</groupId>
             <artifactId>xueting-thesis-result-fanhui</artifactId>
             <version>1.0.0</version>
         </dependency>

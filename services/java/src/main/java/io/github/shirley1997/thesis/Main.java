@@ -1,8 +1,8 @@
-package com.xueting.thesis;
+package io.github.shirley1997.thesis;
 
-import com.xueting.thesis.EventAggregator;
-import com.xueting.thesis.EventAggregator.AggregationResult;
-import com.xueting.thesis.ResponseGenerator;
+import io.github.shirley1997.thesis.EventAggregator;
+import io.github.shirley1997.thesis.EventAggregator.AggregationResult;
+import io.github.shirley1997.thesis.ResponseGenerator;
 
 import io.javalin.Javalin;
 
