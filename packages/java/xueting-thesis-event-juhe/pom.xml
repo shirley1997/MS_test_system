@@ -8,7 +8,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <!-- Basic information of this internal package -->
-    <groupId>com.xueting.thesis</groupId>
+    <groupId>io.github.shirley1997.thesis</groupId>
     <artifactId>xueting-thesis-event-juhe</artifactId>
     <version>1.0.2</version>
     <!--Build package in a .jar file -->

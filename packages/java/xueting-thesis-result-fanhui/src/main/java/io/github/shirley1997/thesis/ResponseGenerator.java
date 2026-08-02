@@ -1,7 +1,7 @@
 // This internal package combines the processed event + counter state in one response
 
 
-package com.xueting.thesis;
+package io.github.shirley1997.thesis;
 
 import java.util.HashMap;
 import java.util.Map;

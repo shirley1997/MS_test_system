@@ -21,6 +21,13 @@ javac 25.0.3    # JDK compiler
 javalin 7.2.2
 jackson-databind 2.21.2
 
+(For publishing packages on maven central public regitry)
+Gpg4win 5.1.0
+maven-gpg-plugin 3.2.8
+central-publishing-maven-plugin 0.10.0
+maven-javadoc-plugin 3.12.0
+maven-source-plugin 3.4.0
+
 # Maven
 Apache Maven 3.9.16 (2bdd9fddda4b155ebf8000e807eb73fd829a51d5)
 Maven home: C:\Program Files\Apache\apache-maven-3.9.16

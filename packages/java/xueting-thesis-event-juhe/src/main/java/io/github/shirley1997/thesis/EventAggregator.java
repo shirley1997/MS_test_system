@@ -2,7 +2,7 @@
 // Function: it takes the current state + event, returns new state.
 // State stores in the service, not in this package.
 
-package com.xueting.thesis;
+package io.github.shirley1997.thesis;
 
 import java.util.HashMap;
 import java.util.Map;

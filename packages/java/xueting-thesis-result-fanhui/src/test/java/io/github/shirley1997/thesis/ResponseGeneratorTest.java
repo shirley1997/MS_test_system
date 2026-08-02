@@ -1,4 +1,4 @@
-package com.xueting.thesis;
+package io.github.shirley1997.thesis;
 
 import org.junit.jupiter.api.Test;
 import java.util.HashMap;
