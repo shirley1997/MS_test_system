@@ -1378,7 +1378,7 @@ Always make sure the Nexus container is running **before** deploying.
 - Updated each `pom.xml` according to the [Maven Central publishing requirements](https://central.sonatype.org/publish/requirements/):
   - Removed the internal Nexus `<distributionManagement>` block.
   - Added project URL, MIT licence, developer information, and GitHub SCM information.
-  - Added source JAR, Javadoc JAR, artifact signing, and Central publishing configuration.
+  - Added source JAR, Javadoc JAR, artifact signing through GPG, and Central publishing configuration.
 - Used these Maven plugins:
   - [Maven Source Plugin](https://maven.apache.org/plugins/maven-source-plugin/usage.html) to generate `-sources.jar`.
   - [Maven Javadoc Plugin](https://maven.apache.org/plugins-archives/maven-javadoc-plugin-3.8.0/usage.html) to generate `-javadoc.jar` (plugin version `3.12.0` was used).
