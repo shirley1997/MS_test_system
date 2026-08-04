@@ -4,20 +4,20 @@ sequenceDiagram
 
     box Node.js service
         participant Node as receive-event-http-api<br/>Service code
-        participant Validate as event-jianding<br/>npm package
-        participant NodeForward as service-fasong<br/>npm package
+        participant Validate as event-jianding<br/>internal package
+        participant NodeForward as service-fasong<br/>internal package
     end
 
     box Python service
         participant Python as process-event-http-api<br/>Service code
-        participant Enrich as event-fengfu<br/>Python package
-        participant PyForward as service-zhuanfa<br/>Python package
+        participant Enrich as event-fengfu<br/>internal package
+        participant PyForward as service-zhuanfa<br/>internal package
     end
 
     box Java service
         participant Java as aggregate-event-http-api<br/>Service code
-        participant Aggregate as event-juhe<br/>Maven package
-        participant Response as result-fanhui<br/>Maven package
+        participant Aggregate as event-juhe<br/>internal package
+        participant Response as result-fanhui<br/>internal package
     end
 
     Client->>+Node: POST /events<br/>Original event JSON
@@ -43,9 +43,9 @@ sequenceDiagram
     Response-->>-Java: aggregated_response
 
     Java-->>-PyForward: HTTP 200<br/>Aggregated-response JSON
-    PyForward-->>-Python: Parsed downstream response
+    PyForward-->>-Python: Response JSON
 
     Python-->>-NodeForward: HTTP 200<br/>Python-response JSON
-    NodeForward-->>-Node: Parsed downstream response
+    NodeForward-->>-Node: Response JSON
 
-    Node-->>-Client: HTTP 200<br/>Final nested-response JSON
+    Node-->>-Client: HTTP 200<br/>Final response JSON (nested)
