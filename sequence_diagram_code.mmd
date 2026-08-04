@@ -1,0 +1,51 @@
+sequenceDiagram
+    autonumber
+    actor Client
+
+    box Node.js service
+        participant Node as receive-event-http-api<br/>Service code
+        participant Validate as event-jianding<br/>npm package
+        participant NodeForward as service-fasong<br/>npm package
+    end
+
+    box Python service
+        participant Python as process-event-http-api<br/>Service code
+        participant Enrich as event-fengfu<br/>Python package
+        participant PyForward as service-zhuanfa<br/>Python package
+    end
+
+    box Java service
+        participant Java as aggregate-event-http-api<br/>Service code
+        participant Aggregate as event-juhe<br/>Maven package
+        participant Response as result-fanhui<br/>Maven package
+    end
+
+    Client->>+Node: POST /events<br/>Original event JSON
+
+    Node->>+Validate: validateEvent(event)
+    Validate-->>-Node: Validation result
+
+    Node->>+NodeForward: forwardEvent(PYTHON_SERVICE_URL, event)
+    NodeForward->>+Python: POST /process<br/>Original event JSON
+
+    Python->>+Enrich: enrich_event(event)
+    Enrich-->>-Python: enriched_event
+
+    Python->>+PyForward: forward_event(JAVA_SERVICE_URL, enriched_event)
+    PyForward->>+Java: POST /aggregate<br/>Enriched event JSON
+
+    Java->>+Aggregate: aggregate(counterState, enriched_event)
+    Aggregate-->>-Java: AggregationResult(updated_event, updated_state)
+
+    Note right of Java: counterState = result.state()
+
+    Java->>+Response: wrap(result.event(), result.state())
+    Response-->>-Java: aggregated_response
+
+    Java-->>-PyForward: HTTP 200<br/>Aggregated-response JSON
+    PyForward-->>-Python: Parsed downstream response
+
+    Python-->>-NodeForward: HTTP 200<br/>Python-response JSON
+    NodeForward-->>-Node: Parsed downstream response
+
+    Node-->>-Client: HTTP 200<br/>Final nested-response JSON
