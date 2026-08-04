@@ -21,14 +21,18 @@ public class Main {
         Javalin.create(config -> {
 
             // Endpoint /health  -> check if the service is working
-            config.routes.get("/health", ctx -> ctx.result("java service is running"));
+            config.routes.get("/health", ctx -> ctx.json(Map.of(
+                "status", "ok",
+                "service", "aggregate-event-http-api"
+            )));
 
             // Endpoint /aggregate  -> help aggregate the event
             config.routes.post("/aggregate", ctx -> {
                 // Parse the incoming JSON event sent by the Python service
                 // Expected fields: id, type, timestamp, processed_by_python
-                @SuppressWarnings("unchecked")
-                Map<String, Object> event = ctx.bodyAsClass(Map.class);
+                 @SuppressWarnings("unchecked")
+                 Map<String, Object> event = ctx.bodyAsClass(Map.class);
+                
 
                 // Use aggregation function from the internal package xueting-thesis-event-juhe
                 AggregationResult result = EventAggregator.aggregate(counterState, event);
