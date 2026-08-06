@@ -6,9 +6,10 @@ from datetime import datetime, timezone
 
 def enrich_event(event):
     """
-    Add extra fields to an event.
+    Add extra fields to an event. This event is validated by service that it is a JSON
+    in this method enrich_event(), the event must be a dict so it can be used to add extra field
 
-    Takes a dict like {"id": "evt_001", "type": "user.signup"}
+    Takes the event like {"id": "evt_001", "type": "user.signup"}
     Returns the same dict but add two new fields:
       - timestamp: current UTC time
       - processed_by_python: True (proves that this event went through python service)
