@@ -31,7 +31,7 @@ public class Main {
             // Endpoint /aggregate  -> responsible for aggregating the event and return the aggregate results
             // use the functionality of the two java internal package: EventAggregator, ResponseGenerator
             config.routes.post("/aggregate", ctx -> {
-                // use the context (ctx) of jackson to access the request body
+                // use the context (ctx) of javalin to access the request body
                 // Then convert the incoming JSON event sent by the Python service to a java map object 
                 // Then put into a empty map object "event" 
                 // Expected fields of event: id, type, timestamp, processed_by_python
