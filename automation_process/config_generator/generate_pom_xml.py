@@ -30,8 +30,8 @@ import tempfile
 
 # Internal packages of java service 
 INTERNAL_PACKAGES = [
-    ("com.xueting.thesis", "xueting-thesis-event-juhe"),
-    ("com.xueting.thesis", "xueting-thesis-result-fanhui"),
+    ("io.github.shirley1997.thesis", "xueting-thesis-event-juhe"),
+    ("io.github.shirley1997.thesis", "xueting-thesis-result-fanhui"),
 ]
 
 # variable A -> private Nexus repo name 
@@ -120,7 +120,7 @@ POM_TEMPLATE = """\
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.xueting.thesis</groupId>
+    <groupId>io.github.shirley1997.thesis</groupId>
     <artifactId>aggregate-event-http-api</artifactId>
     <version>1.0.0</version>
     <packaging>jar</packaging>
