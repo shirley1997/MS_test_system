@@ -1590,3 +1590,71 @@ Hash-checking (`--require-hashes`, auto-triggered whenever any entry has a hash)
 ## Next steps
 - Start integrating the `maven-lockfile` plugin for Java service's C1c (parallel supplementary study to pip's pylock work, same open question noted on 26.07).
 - Run real pilot cells for testing across the A×B1×B2 matrix for Python's new C1c and java service CI pipeline.
+
+# 08.08.2026 Integrate `maven-lockfile` plugin into Java service C1c ("rebuild with existing lockfile")
+
+**Stand: Java service CI pipeline's C1c is no longer `invalid_combination`. It now uses the third-party `maven-lockfile` plugin (chains-project, subject of arXiv paper 2510.00730) to generate a lockfile and rebuild against it. Ran the very first real pilot cell of the whole Java pipeline (`Service CI - Java #1`) — found and partly fixed two pre-existing infrastructure bugs unrelated to maven-lockfile itself. One fix (settings.xml HTTP-blocker override) still open for tomorrow.**
+
+## 1. What `maven-lockfile` is (researched today)
+
+- Third-party Maven plugin from `chains-project`, subject of the paper "Maven-Lockfile: High Integrity Rebuild of Past Java Releases" (arXiv 2510.00730).
+- Problem it solves: Maven doesn't pin *exactly which artifact bytes* a build resolved anywhere by default, only the version string in `pom.xml`. Two builds of the same `pom.xml` can silently resolve different artifacts later (metadata drift, or — relevant to this thesis — a dependency confusion attack serving a different artifact under the same coordinate).
+- Records the fully resolved dependency tree + SHA-256 checksums into `lockfile.json`.
+- Verified plugin facts directly against source code (`GenerateLockFileMojo.java`, `FreezeDependencyMojo.java`, `ValidateMojo.java` on GitHub), not just the README, because an AI web-summary of the README got a detail wrong (see below):
+  - `generate`: normal resolve (via project's configured repositories) + writes `lockfile.json`.
+  - `validate`: **does not resolve from the lockfile.** Re-runs normal resolution again and diffs checksums (computed from local `~/.m2` cache) against the stored lockfile. It's a drift/integrity check, not a "rebuild".
+  - `freeze`: the goal that actually *uses* the lockfile's content — pure in-memory transform (no network calls), reads `lockfile.json` + `pom.xml`, writes `pom.lockfile.xml` with every dependency version hard-pinned. Running a real resolution command against that frozen POM is the actual "rebuild from lockfile" step, the true analog of `npm ci` / `pip install -r pylock.toml`.
+- Coordinates: `io.github.chains-project:maven-lockfile`. Pinned to **5.17.3** (verified as the GitHub-marked "Latest Release" stable version via the GitHub Releases page and Maven Central's search API — an earlier AI summary of the README gave a wrong version number, `5.14.1-beta-1`, which is why I double-checked against Maven Central directly instead of trusting a single source).
+
+## 2. Design decisions made today (C1c for Java)
+
+- **2-part pattern (setup + rebuild), no `validate` step, no cache purge in between.**
+  - Setup (`generate`): resolves the cell's real `pom.xml` (A/B1/B2 config), writes `lockfile.json`.
+  - Rebuild (`freeze` + `dependency:tree`): `freeze` pins every dependency to the lockfile's recorded version into `pom.lockfile.xml`; `dependency:tree` (same plugin/version as C1a) then resolves against that frozen POM. This is the primary classifier evidence for C1c, parallel to C1a's `dependency-tree.json`.
+- **No cache purge between generate and rebuild**: Maven's `~/.m2` local repo *is* the resolved state (unlike npm's `node_modules`, there's no separate install target to reset). Purging it before rebuild would just turn "rebuild" back into a second "initial install". Matches how npm/pip's C1c also don't purge cache between their setup and rebuild phases.
+- **`validate` intentionally left out for now** — documented as a known gap, not an oversight: `freeze`+`dependency:tree` only pins the *version number*, not the source/checksum. A same-version collision between the private and public repo at rebuild time (attacker republishes the exact pinned version) would slip through undetected by this design, since `validate` is the only checksum-aware goal in the plugin and it isn't wired in. Revisit later if this gap needs closing for the findings chapter.
+- **Kept `${cell_id}_setup-dependency-tree.json` in C1b's artifact list** (reviewed whether to drop it, mirroring the pip cleanup from earlier today). Decided against dropping it: unlike pip's case (pure debug convenience, log already covers it), this JSON is the only structured, scriptable way to verify that C1b's baseline setup phase really resolved internal packages to exactly `1.0.0` before phase 2 runs — a hard experimental precondition for C1b's validity, not just debugging convenience.
+- **`${cell_id}_pom.lockfile.xml` flagged as a Tier-2 (debug) artifact**, candidate to drop after pilot phase once `freeze`'s behavior is confirmed reliable — its content is already implied by `lockfile.json` + the effect is already visible in `rebuild-dependency-tree.json`.
+
+## 3. Implemented in `service-ci-java.yml`
+
+- Replaced the old `C1c) - INVALID FOR MAVEN` step with the real 2-part flow above.
+- Added new artifact files to the upload list: `${cell_id}_lockfile.json`, `${cell_id}_pom.lockfile.xml`, `${cell_id}_rebuild-dependency-tree.json`, `${cell_id}_mvn_lockfile_log.txt`.
+- No change needed to `generate_pom_xml.py`/other generators — `C1` logic stays entirely in YAML (per the 11.07.2026 decision), and the plugin is invoked via fully-qualified goal (`mvn io.github.chains-project:maven-lockfile:5.17.3:generate`), same pattern as `maven-dependency-plugin` in C1a — no plugin declaration needed in `pom.xml` at all.
+
+## 4. Installed and configured GitHub CLI (`gh`)
+
+- Wasn't installed on the Windows dev machine at all. Needed it to inspect GitHub Actions run logs/artifacts directly instead of relying on the VS Code GitHub Actions extension's UI (which lags behind actual run state / doesn't reliably auto-refresh).
+- This is also required infrastructure for the central automated pipeline's design from 09.07.2026 (`gh workflow run`, `gh run watch`, `gh run download`), not just a one-off convenience.
+- Installed via `winget install --id GitHub.cli`, authenticated via `gh auth login` (GitHub.com, HTTPS, browser login).
+
+## 5. First real pilot test of the whole Java pipeline
+
+- Triggered via the VS Code "GitHub Actions" extension: `Service CI - Java` workflow, `workflow_dispatch` inputs `cell_id=pilot_c1c_001, A=A1a, B1=B1a, B2=B2a, C1=C1c`.
+- This was `Service CI - Java #1` — literally the first real run of the entire Java pipeline (only pilot-tested at the design/generator level before, per 26.07.2026's "not tested yet").
+- **Result: `BUILD FAILURE`** at the `generate` step, before even reaching `freeze`/`dependency:tree`.
+
+### Commands used to inspect it
+```powershell
+gh auth status
+gh run list --workflow="service-ci-java.yml" --limit 5
+gh run view <run-id>
+gh run view <run-id> --job=<job-id> --log
+```
+
+### Root causes found (two, both pre-existing, unrelated to maven-lockfile itself)
+
+1. **Stale groupId in `generate_pom_xml.py`.** The generated `pom.xml` still used `com.xueting.thesis` (the old groupId, before the 01–02.08.2026 migration to `io.github.shirley1997.thesis`). The old Nexus components were deleted during that migration, so `com.xueting.thesis:xueting-thesis-event-juhe:1.0.0` no longer exists anywhere. **Fixed today** — updated the generator's groupId.
+2. **Maven's built-in HTTP-blocker mirror.** Maven 3.8.1+ (runner is pinned to 3.9.16) refuses plain `http://` repositories by default via a built-in mirror (`maven-default-http-blocker`, redirects to a dummy `http://0.0.0.0/` sink) unless explicitly unblocked. Nexus is served over plain HTTP (`http://host.docker.internal:8081`), and no `settings.xml` exists anywhere in the runner image (confirmed: not referenced in `Dockerfile` or `entrypoint.sh` at all) — so nothing was overriding the block. This affects **all** C1 variants (C1a/C1b/C1c), not just C1c or maven-lockfile — it just happened to surface first here because this was the pipeline's first real run.
+
+### Fix designed for tomorrow (not yet applied)
+- Add `infrastructure/runner/settings.xml` with a mirror override that excludes the known Nexus repo IDs (`central`, `maven-group-public-first`, `maven-group-private-first`, `maven-internal-hosted`, `maven-public-proxy` — pulled directly from `generate_pom_xml.py`'s `A_TO_PRIVATE_REPO`/`MAVEN_PUBLIC_PROXY_REPO`) from the blanket HTTP block, using Maven's `!repoId` mirrorOf exclusion syntax, while keeping the block active for everything else.
+- `COPY` it into the image at `/home/runner/.m2/settings.xml` in the `Dockerfile`, rebuild image, recreate container, re-run the pilot cell.
+- No credentials needed in this file (Nexus anonymous read should cover GET requests) — safe to commit to git, unlike the Windows-side `settings.xml`.
+
+## Next steps
+- [ ] Apply the `settings.xml` mirror fix + `Dockerfile` `COPY` line.
+- [ ] Rebuild runner image, recreate container.
+- [ ] Re-run `pilot_c1c_001`-style cell, confirm `generate` succeeds, then `freeze` + `dependency:tree` against `pom.lockfile.xml`.
+- [ ] Once green, run the rest of the pilot matrix from the plan's Verification section (vulnerable cell, resolution-error cell, invalid-combination regression check).
+- [ ] Also verify anonymous read is actually enabled for Maven repos specifically on Nexus (only confirmed for npm on 10.07.2026) in case a new auth error appears after the HTTP-block fix.
