@@ -150,7 +150,7 @@ jobs:
             exit 0
           fi
           echo "[C1c] lockfile generated after initial install, now run npm ci for rebuild"
-          npm ci 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
+          npm ci --dry-run 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
 
 
       # 6. Run dependency resolution command
@@ -171,13 +171,15 @@ jobs:
       # -------------------------------------------------------------------
 
 
-      # 7. Upload the resolution output (package-lock.json + command output) as one artifact. 
+      # 7. Upload the resolution output (package-lock.json + command output) and evidence files as one artifact. 
       # The central automated pipeline will download and classify it, and write one row to results.csv.
       - name: Upload raw resolution output of npm (package manager)
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.cell_id }}_npm_raw
           path: |
+            services/nodejs/.npmrc
+            services/nodejs/package.json
             services/nodejs/package-lock.json
             services/nodejs/${{ inputs.cell_id }}_npm_log.txt
             services/nodejs/${{ inputs.cell_id }}_npm_setup_log.txt

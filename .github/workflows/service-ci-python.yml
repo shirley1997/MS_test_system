@@ -148,9 +148,9 @@ jobs:
           --report "${{ inputs.cell_id }}_setup-install-report.json" . \
           2>&1 | tee "${{ inputs.cell_id }}_pip_setup_log.txt" || true
 
-          # Sanity check: if baseline install failed, upgrade phase is meaningless
+          # Sanity check: if initial install failed, upgrade phase is meaningless
           if [ ! -d ./py_dependency ] || [ -z "$(ls -A ./py_dependency 2>/dev/null)" ]; then
-            echo "[C1b] setup phase: initial install failed: no packages in ./py_dependency. skip upgrade phase." \
+            echo "[C1b] setup phase: initial install failed: no packages in ./py_dependency. skip package upgrade phase." \
               | tee "${{ inputs.cell_id }}_pip_log.txt"
             mv pyproject_cell.toml pyproject.toml
             exit 0
@@ -160,7 +160,7 @@ jobs:
           mv pyproject_cell.toml pyproject.toml
           echo "[C1b] internal package successfully installed to ./py_dependency. now running upgrade"
 
-          # ---- Phase 2: observation (DRY-RUN upgrade of internal packages) ----
+          # Phase 2: DRY-RUN upgrade of internal packages
           pip install --dry-run --target ./py_dependency --upgrade \
             xueting-thesis-event-fengfu xueting-thesis-service-zhuanfa \
             --report "${{ inputs.cell_id }}_install-report.json" \
@@ -168,14 +168,36 @@ jobs:
                 
 
       
-      # C1c: pip doesn't have lockfile, the configuration combinration involve this variable is invalid
-      # for classifier: make explicit output file so "invalid combination" is a different outcome from "resolution error"
-      - name: Apply CI pipeline operation (C1c) - INVALID FOR PIP
+      # C1c: pip has a experimental lockfile and has "rebuild with lockfile" since pip 26.1
+      # Important change in 08.08.2026: upgrade pip from 25.1.1 to 26.2.1 -> C1c is not invalid anymore
+      # two phases (similar to npm):
+        # Phase 1: use pip lock to generate pylock.toml (contains service's dependencies name, version, resolved URL)
+        # Phase 2: use pip install to represent "rebuild with lockfile" scenario, 
+        # use --dry-run to obtain resolution output, without actually install the dependencies -> faster per-cell
+      - name: Apply CI pipeline operation (C1c)
         if: inputs.C1 == 'C1c'
         working-directory: services/python
+        continue-on-error: true
+        env:
+          PIP_CONFIG_FILE: ${{ inputs.B1 != 'B1d' && format('{0}/services/python/pip.conf', github.workspace) || '' }}
         run: |
-          echo "invalid_combination: python (pip) x C1c (no native lockfile)" \
-            > "${{ inputs.cell_id }}_invalid.txt"
+          pip lock --only-deps --output "pylock.${{ inputs.cell_id }}.toml" . \
+            2>&1 | tee "${{ inputs.cell_id }}_pip_setup_log.txt" || true
+
+          # Sanity check: if initial phase failed (resolution error, no lock file generated), then rebuild with lockfile phase is meaningless
+          if [ ! -s "pylock.${{ inputs.cell_id }}.toml" ]; then
+            echo "[C1c] setup phase: pip lock failed, no lockfile produced. skip "rebuild with lockfile" phase." \
+              | tee "${{ inputs.cell_id }}_pip_log.txt"
+            exit 0
+          fi
+
+          echo "[C1c] pip lockfile generated successfully. now running "rebuild with lockfile" phase"
+
+          pip install --dry-run --ignore-installed \
+            -r "pylock.${{ inputs.cell_id }}.toml" \
+            --report "${{ inputs.cell_id }}_install-report.json" \
+            2>&1 | tee "${{ inputs.cell_id }}_pip_log.txt" || true
+
 
 
       # 7. Upload the resolution output (install-report.json + command outputs) as one artifact.
@@ -187,11 +209,10 @@ jobs:
           path: |
             services/python/pip.conf
             services/python/pyproject.toml
+            services/python/pylock.${{ inputs.cell_id }}.toml
             services/python/${{ inputs.cell_id }}_install-report.json
-            services/python/${{ inputs.cell_id }}_setup-install-report.json
             services/python/${{ inputs.cell_id }}_pip_log.txt
             services/python/${{ inputs.cell_id }}_pip_setup_log.txt
-            services/python/${{ inputs.cell_id }}_invalid.txt
 
           if-no-files-found: warn
           #changed from error to warn. because now some listed files (like the setup log for non-C1c cells) won't exist

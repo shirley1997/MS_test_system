@@ -45,3 +45,6 @@ services/python/pip.conf
 services/python/pip.ini
 services/python/pyproject.toml
 services/java/pom.xml
+services/python/pylock.test.toml
+services/python/pylock.test3.toml
+services/python/test-install-report3.json

@@ -1,4 +1,4 @@
-# Stand: 28.06.2026
+# Stand: 08.08.2026
 
 # node.js
 Node.js: v24.18.0
@@ -78,6 +78,8 @@ Windows-Version: 10.0.19045.6466
 
 # Github Runner
 v2.335.1
+
+(keep the current version. only manally update it in runner dockerfile if this version is deprecated)
 
 
 Do not randomly upgrade package manager version, docker version later during the experiment, because it could change dependency resolution behavior. Keep the version fixed.
