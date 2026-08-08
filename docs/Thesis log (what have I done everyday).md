@@ -1501,3 +1501,92 @@ Always make sure the Nexus container is running **before** deploying.
   mvn clean package
   java -jar target\<service-jar-name>.jar
   ```
+
+# 08.08.2026 Upgrade pip to 26.2.1, fix runner version auto-update bug, implement `pip lock` for Python C1c
+
+**Stand: pip 26.2.1 instead of pip 25.1.1 running in both the runner image and my Windows dev environment. Runner no longer force-updates itself. Python CI pipeline variable C1c ("rebuild with existing lockfile") is no longer `invalid_combination`. it now uses pip's experimental `pip lock` command (PEP 751). Node.js CI pipeline also got two small consistency fixes while reviewing artifacts.**
+
+## 1. Upgraded pip to 26.2.1 (runner image + Windows dev env)
+
+- Reason: `pip lock` (generating a lockfile) has existed since pip **25.1**, but reading a lockfile while installing packages with command `pip install -r pylock.toml` — the actual piece C1c needs for "rebuild from existing lockfile" was only added in pip **26.1**, with further fixes in **26.2**. Checked against pip's own changelog.
+- Decision: pin to **26.2.1** (latest stable), **in place** in the existing `thesis-runner:2.335.1` image: replacing 25.1.1 as the new pinned version going forward, not a parallel image.
+- This directly contradicts my own 26.06 rule ("pip 25.1.1 must not change during experiment") — accepted knowingly, documented here as the reason the pin moved (methodology transparency), same as every other version decision in this log.
+- Confirmed python compatible first: pip 26.2.1 requires Python ≥3.10, still supports 3.12 → no conflict with pinned CPython 3.12.4.
+- Edited `infrastructure/runner/Dockerfile`: header comment + the `pip install "pip==25.1.1"` line → `"pip==26.2.1"`.
+- Rebuilt image and recreated the runner container (same cycle as every prior Dockerfile change):
+  ```powershell
+  docker build -t thesis-runner:2.335.1 infrastructure/runner/
+  docker rm -f thesis-runner
+  docker run -d --name thesis-runner -e GH_REPO_URL=... -e GH_TOKEN=<fresh token> thesis-runner:2.335.1
+  ```
+- Verified: `docker exec thesis-runner pip --version` → `pip 26.2.1`; `python3.12 -m pip lock --help` shows the `lock` subcommand.
+- Also upgraded pip on the Windows dev machine. Had to explicitly bypass my own user-level `pip.ini` (which points to Nexus) for this time:
+  ```powershell
+  python -m pip install --index-url https://pypi.org/simple pip==26.2.1
+  ```
+
+## 2. Fixed a runner bug: GitHub forced an auto-update and crashed the container
+
+- the runner log showed GitHub silently force-updating the runner binary (2.335.1 → 2.336.0) mid-session:
+  ```
+  Runner update in progress, do not shutdown runner.
+  Downloading 2.336.0 runner
+  ...
+  Restarting runner...
+  /home/runner/run-helper.sh: line 36: /home/runner/bin/Runner.Listener: No such file or directory
+  Exiting with unknown error code: 127
+  ```
+  → infinite crash loop (missing binary after the in-place swap) , the runner container can not be started anymore.
+- **Root cause**: `infrastructure/runner/entrypoint.sh` registers via `config.sh` without the `--disableupdate` flag, so GitHub's backend is free to auto-update the runner whenever it considers it outdated. This directly contradicts the Dockerfile's own stated design (pinned, SHA-256-verified runner version, bumped deliberately via `RUNNER_VERSION`/`RUNNER_SHA256` ARGs).
+- **Fix**: added `--disableupdate` to the `config.sh` call in `entrypoint.sh`, rebuilt the image, removed the broken container, and registered a fresh one with a new token.
+- Verified: log now stays at `Listening for Jobs`, no more forced update messages.
+- Clarified for myself: with `--disableupdate` set, tool versions inside the container never change automatically at runtime — the only thing that can still force action is GitHub's documented **30-day out-of-date cutoff**, visible as a warning directly on the runner's entry under Settings → Actions → Runners.
+- if the runner version truly deprecated, then I manually edit the dockerfile and rebuild the image + recreate the container again
+
+## 3. Implemented `pip lock` for Python service's C1c ("rebuild with existing lockfile")
+
+- Context: C1c was `invalid_combination` for pip since 10.07 (no native lockfile). The 26.07 log reopened study using pip's experimental `pip lock` (PEP 751) — same idea as npm's `package-lock.json` and the `maven-lockfile` plugin planned for Java.
+- Read pip's own CLI reference for `pip lock` (https://pip.pypa.io/en/stable/cli/pip_lock/): confirms it locks packages from PyPI/other indexes via requirement specifiers, VCS URLs, local project directories, or local/remote source archives — plus locking from requirements files.
+- Read the pylock.toml spec for the exact file format: https://packaging.python.org/en/latest/specifications/pylock-toml/
+- Read pip's repeatable-installs page for the broader hash/lock context: https://pip.pypa.io/en/stable/topics/repeatable-installs/
+- Cross-checked a community write-up (pydevtools handbook) that independently confirmed the same filename rule I'd already hit empirically: https://pydevtools.com/handbook/how-to/how-to-install-from-a-pylock-toml-lockfile-with-pip/
+
+### Pilot tests run locally (in `services/python/`), in order
+1. **`pip lock -o test_pylock.toml .`** → succeeded. Confirmed it reads `pyproject.toml` (same mechanism as `pip install .`) and resolves through my configured index (local `pip.ini` → Nexus `pypi-group-public-first`). Also got: `WARNING: test_pylock.toml is not a valid lock file name.`
+2. **Filename rule investigation** → PEP 751 requires the file be named exactly `pylock.toml` or match `^pylock\.([^.]+)\.toml$`. Confirmed this isn't just a cosmetic warning: reading a non-conforming name back with `-r` **hard-fails**: chokes on the first TOML line (`ERROR: Invalid requirement: 'lock-version = "1.0"'`).
+3. **Hash conflict** → `pip install -r pylock.test.toml` (correctly renamed) still failed: `Can't verify hashes for these file:// requirements because they point to directories`. Cause: the lockfile always includes the service's own package as a `[packages.directory] path = "."` entry, which can't be hashed — and once any entry in the file has a hash, pip's hash-checking mode requires every entry to have one.
+4. **Fix: `--only-deps`** → *"Take only the dependencies of the provided requirements into account, not the requirements themselves"* (official flag description). `pip lock --only-deps -o pylock.test3.toml .` drops the self-referencing directory entry entirely. Retested `pip install --dry-run --ignore-installed -r pylock.test3.toml --report test-install-report3.json` → installed cleanly, and the report has package name, version, resolved URL field, good for classifying result in central automated pipeline later.
+
+### Final design decided for C1c (2 phases, similar to npm's C1c pattern)
+- **Phase 1 (setup)**: `pip lock --only-deps --output "pylock.<cell_id>.toml" .` — generates the lockfile from the cell's actual `pyproject.toml` + `pip.conf`.
+- **Edge case**: if phase 1 produces no lockfile (resolution error), log it and skip phase 2 — same rule as npm's C1c from 11.07.
+- **Phase 2 (rebuild, observation)**: `pip install --dry-run --ignore-installed -r "pylock.<cell_id>.toml" --report "<cell_id>_install-report.json"` — dry-run only, no real download/install, so the classifier gets the same JSON shape as C1a/C1b and need less time per-cell.
+- Filename convention confirmed: `pylock.<cell_id>.toml` (never `<cell_id>_pylock.toml`).
+- Implemented into `service-ci-python.yml`, replacing the old "INVALID FOR PIP" block.
+
+### Artifact list cleanup (python pipeline)
+Went through the upload-artifact list against one principle: keep only what the classifier needs (Tier 1) plus what's needed to debug a failing cell (Tier 2), drop the rest.
+- **Tier 1 (classification)**: `<cell_id>_install-report.json`, `<cell_id>_pip_log.txt` (fallback when resolution fails and no JSON report exists).
+- **Tier 2 (evidence)**: `pip.conf`, `pyproject.toml`, new `pylock.<cell_id>.toml`, `<cell_id>_pip_setup_log.txt`.
+- **Dropped as redundant/dead**: `<cell_id>_setup-install-report.json` (JSON of C1b's fixed, non-varying baseline install — `_pip_setup_log.txt` already covers debugging with no added value from a second JSON copy) and `<cell_id>_invalid.txt` (nremoved).
+
+### Thesis-relevant finding
+Hash-checking (`--require-hashes`, auto-triggered whenever any entry has a hash) defends against a source serving **different bytes under the same name+version after the lockfile was generated** , it does **not** defend against dependency confusion **at lock-generation time**. If a DCA-vulnerable A/B1 config resolves the attacker's package while running `pip lock`, the hash just pins and reinstalls that attacker package forever, no error. Worth framing explicitly in the C1c results section: locking only freezes whatever resolution outcome already happened, good or bad.
+
+## 4. Node.js pipeline: two small consistency fixes found while reviewing artifacts
+
+- **Added `--dry-run` to `npm ci` in C1c**: previously ran a real install. Confirmed safe — the classifier's evidence file (`package-lock.json`) is already fully written by phase 1 (`npm install --package-lock-only`) *before* `npm ci` runs; `npm ci` only verifies against the existing lock, it never rewrites it. So `--dry-run` skips real downloads/`node_modules` writes with zero loss of classifier data, and brings npm's C1c in line with pip's resolution-only design.
+- **Found a gap in the npm upload-artifact list**: it was missing config evidence. Python's list explicitly keeps `pip.conf` + `pyproject.toml`, but npm's list had no equivalent for `.npmrc` (B1) or `package.json` (B2). Added both for consistency between the two pipelines.
+
+## Reference links collected today
+- `pip lock` CLI reference: https://pip.pypa.io/en/stable/cli/pip_lock/
+- pylock.toml file format spec: https://packaging.python.org/en/latest/specifications/pylock-toml/
+- PEP 751 (lock file standard, filename rule): https://peps.python.org/pep-0751/
+- pip repeatable installs (hash-checking mode background): https://pip.pypa.io/en/stable/topics/repeatable-installs/
+- Community write-up confirming the filename rule independently: https://pydevtools.com/handbook/how-to/how-to-install-from-a-pylock-toml-lockfile-with-pip/
+- pip release history (25.1 lock introduction, 26.1/26.2 `-r pylock.toml` support): https://pip.pypa.io/en/stable/news/  
+  - pip 26.1 explicit said added new feature: "Add experimental support to read requirements from standardized pylock.toml files" 
+
+## Next steps
+- Start integrating the `maven-lockfile` plugin for Java service's C1c (parallel supplementary study to pip's pylock work, same open question noted on 26.07).
+- Run real pilot cells for testing across the A×B1×B2 matrix for Python's new C1c and java service CI pipeline.
