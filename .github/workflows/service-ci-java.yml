@@ -160,14 +160,54 @@ jobs:
             -DoutputType=json \
             2>&1 | tee "${{ inputs.cell_id }}_mvn_log.txt" || true
  
-      # C1c: rebuild with lockfile (maven doesn't have native lockfile)
-      # For classifier: make explicit output file so "invalid combination" is a different outcome from "resolution error".
-      - name: Apply CI pipeline operation (C1c) - INVALID FOR MAVEN
+      # C1c: rebuild with lockfile 
+      # update 08.08.2026: maven doesn't have native lockfile, but third party has proposed a maven-lockfile plugin
+      # 2 phases:
+        # phase 1: use the cell's inputs, pom.xml to generate the lockfile using goal "generate"
+        # phase 2:
+      - name: Apply CI pipeline operation (C1c) 
         if: inputs.C1 == 'C1c'
         working-directory: services/java
+        continue-on-error: true
         run: |
-          echo "invalid_combination: java (maven) x C1c (no native lockfile in maven)" \
-            > "${{ inputs.cell_id }}_invalid.txt"
+          if [ ! -f pom.xml ]; then
+            echo "[C1c] skip: no pom.xml is generated because of invalid A x B1 x B2 combination)."
+            exit 0
+          fi
+          
+          LOCKFILE="${{ inputs.cell_id }}_lockfile.json"
+          FROZEN_POM="${{ inputs.cell_id }}_pom.lockfile.xml"
+          LOGFILE="${{ inputs.cell_id }}_mvn_lockfile_log.txt"
+
+          # 1. Setup: generate lockfile.json from the cell's actual resolution (A/B1/B2 config).
+          mvn -B io.github.chains-project:maven-lockfile:5.17.3:generate \
+            -DlockfileName="$LOCKFILE" \
+            2>&1 | tee "$LOGFILE" || true
+
+          if [ ! -s "$LOCKFILE" ]; then
+            echo "[C1c] phase 1: no lockfile.json is produced (resolution error happens). skip rebuild with lockfile phase." \
+              | tee -a "$LOGFILE"
+            exit 0
+          fi
+
+          # 2. Rebuild: goal "freeze" pins every dependency to the lockfile's recorded version (no
+          #    resolution itself, just rewrites the POM), then dependency:tree resolves against that frozen POM
+          #  this is the step that is actually driven by the lockfile.
+          mvn -B io.github.chains-project:maven-lockfile:5.17.3:freeze \
+            -DlockfileName="$LOCKFILE" \
+            -DpomLockfileOutput="$FROZEN_POM" \
+            2>&1 | tee -a "$LOGFILE" || true
+
+          if [ -f "$FROZEN_POM" ]; then
+            mvn -B -f "$FROZEN_POM" org.apache.maven.plugins:maven-dependency-plugin:3.11.0:tree \
+              -DoutputFile="${{ inputs.cell_id }}_rebuild-dependency-tree.json" \
+              -DoutputType=json \
+              2>&1 | tee -a "$LOGFILE" || true
+          else
+            echo "[C1c] freeze phase failed: no pom.lockfile.xml can be produced." | tee -a "$LOGFILE"
+          fi
+
+
  
       # 6. Upload the resolution output (log + dependency tree + pom + invalid marker).
       #    The central automated pipeline will download and classify it, and write one row to results.csv.
@@ -183,4 +223,8 @@ jobs:
             services/java/${{ inputs.cell_id }}_dependency-tree.json
             services/java/${{ inputs.cell_id }}_setup-dependency-tree.json
             services/java/${{ inputs.cell_id }}_invalid.txt
+            services/java/${{ inputs.cell_id }}_lockfile.json
+            services/java/${{ inputs.cell_id }}_pom.lockfile.xml
+            services/java/${{ inputs.cell_id }}_rebuild-dependency-tree.json
+            services/java/${{ inputs.cell_id }}_mvn_lockfile_log.txt
           if-no-files-found: warn
