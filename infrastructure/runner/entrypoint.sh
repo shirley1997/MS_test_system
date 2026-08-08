@@ -54,6 +54,8 @@ RUNNER_LABELS="${RUNNER_LABELS:-thesis-runner}"
 # The file .credentials is written by config.sh on successful first registration. and will exist inside container
 # So next time if the container start again (not removed), it will keep the credential and doesn't need the registration again
 # flag "--replace": if a runner with this name already exists in GitHub's list, replace it. 
+# 08.08.26: added "--disableupdate" to prevent auto update of github runners, 
+# will manually edit the runner install command in dockerfile only when the runner version is descrapted
 # avoid "name already taken" error when restart the container.
 
 if [ -f .credentials ]; then
@@ -69,7 +71,8 @@ else
         --token "${GH_TOKEN}" \
         --name "${RUNNER_NAME}" \
         --labels "${RUNNER_LABELS}" \
-        --replace
+        --replace \
+        --disableupdate
 fi
 
 

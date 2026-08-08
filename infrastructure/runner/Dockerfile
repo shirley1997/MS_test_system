@@ -1,6 +1,6 @@
 # GitHub Actions self-hosted runner for dependency confusion experiments
 # Base image        : Ubuntu 24.04
-# Toolchains (pinned) : Node 24.18.0, npm 11.16.0, Python 3.12.4, pip 25.1.1,
+# Toolchains (pinned) : Node 24.18.0, npm 11.16.0, Python 3.12.4, pip 26.2.1,
 #                     Temurin JDK 25.0.3, Maven 3.9.16, Git 2.45.2
 # Runner binary     : v2.335.1 (SHA-256 verified)
 # Registration mode : persistent (single long-lived runner)
@@ -58,7 +58,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 
-# desired version: Python 3.12.4 + pip 25.1.1 (fit the development environment)
+# desired version: Python 3.12.4 + pip 26.2.1 (fit the development environment)
 # Ubuntu 24.04 provides Python 3.12, but its apt repository does not guarantee the exact CPython patch release (3.12.4) required by the experiment.
 # Therefore, CPython 3.12.4 is built from the python official source archive
 
@@ -95,7 +95,7 @@ RUN curl -fsSL "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYT
     # Install the exact pip version (25.1.1)
     # python3.12 -m pip ensures that pip belongs to this Python installation
     && /opt/python/${PYTHON_VERSION}/bin/python3.12 \
-         -m pip install --no-cache-dir "pip==25.1.1" \
+         -m pip install --no-cache-dir "pip==26.2.1" \
 
     # Verify that the installed interpreter is exactly Python 3.12.4
     && /opt/python/${PYTHON_VERSION}/bin/python3.12 --version \

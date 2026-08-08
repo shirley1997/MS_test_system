@@ -6,7 +6,11 @@ npm: 11.16.0
 
 # python
 Python 3.12.4
-pip 25.1.1
+pip: 25.1.1 -> 26.2.1 (changed 08.08.2026)
+- Reason: pip 26.1 added the ability to install from an existing pylock.toml
+file (`pip install -r pylock.toml`), needed for variable C1c ("rebuild with existing lockfile"). pip 25.1.1 could only generate a lockfile, not read one back.
+pip version pinned to 26.2.1 (latest stable version) since it includes all pylock.toml fixes through the 26.2 release. Confirmed compatible with pinned Python 3.12.4 (pip 26.2.1 requires Python >=3.10).
+
 requests 2.32.5
 build 1.2.2 
 twine version 6.1.0 (keyring: 25.7.0, packaging: 26.2, requests: 2.32.5, requests-
