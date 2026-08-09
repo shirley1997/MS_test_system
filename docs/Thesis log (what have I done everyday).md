@@ -1654,3 +1654,81 @@ gh run view <run-id> --job=<job-id> --log
 - [ ] Re-run `pilot_c1c_001`-style cell, confirm `generate` succeeds, then `freeze` + `dependency:tree` against `pom.lockfile.xml`.
 - [ ] Once green, run the rest of the pilot matrix from the plan's Verification section (vulnerable cell, resolution-error cell, invalid-combination regression check).
 - [ ] Also verify anonymous read is actually enabled for Maven repos specifically on Nexus (only confirmed for npm on 10.07.2026) in case a new auth error appears after the HTTP-block fix.
+
+# 09.08.2026 fix bug & pilot test of java pipeline
+- Fixed remaining runner bugs, verified the id=central override in pom.xml empirically, redesigned C1c around lockfile.json, first real DCA success in the main matrix
+
+- **Stand: Java C1c pipeline fully working end-to-end. Confirmed that the `id=central` override mechanism is correct, via source code + an official Maven doc + an empirical test. Made and implemented a final design decision on repository IDs for the main experiment matrix. Got a real, reproducible dependency-confusion success in the pilot data. Redesigned C1c's evidence file after discovering `dependency-tree.json` doesn't carry resolved URLs. Found and explained a cache-related pilot-testing confound (not a real experiment bug).**
+
+## 1. Applied yesterday's settings.xml fix, found one more bug, got the first fully green C1c run
+
+- Rebuilt the runner image with the `settings.xml` mirror override designed yesterday, recreated the container. (fix the maven built-in HTTP blocker mirror problem)
+- Hit a **new** bug while re-testing: a C1c run took 6+ minutes and had to be cancelled. Root cause: `maven-lockfile:generate`'s `includeMavenPlugins` parameter defaults to `true`, so it was also resolving + checksumming the full transitive dependency tree of every Maven default lifecycle plugin (`maven-install-plugin`, `maven-core`, `plexus-*`, etc.) — out of scope of thie thesis
+- Fixed with `-DincludeMavenPlugins=false` on the `generate` calls.
+- Result: `pilot_c1c_003` (`A1a×B1a×B2a×C1c`) went fully green in 37s 
+
+## 2. Verified the `id=central` override mechanism in pom.xml is actually correct 
+
+- Ran `mvn help:effective-pom` locally (offline, no Docker needed) against generated `pom.xml` for all combination of A x B1. (see directory "effective-pom-check")
+- Confirmed: `<repositories>` (controls dependency resolution) has exactly **one** `central` entry, pointing at the Nexus URL, successful override of superPOM.
+
+
+## 3. Found the official Maven documentation for the id-merge mechanism
+
+- It's not in a prose guide, but it **is** documented at the schema level: the Maven 4.0.0 POM XSD (`https://maven.apache.org/xsd/maven-4.0.0.xsd`), in the `<id>` field's description under `RepositoryBase`: *"the identifier is used during POM inheritance and profile injection to detect repositories that should be merged."*
+
+
+## 4. Ran a deliberate ablation test: what if `id=central` is *not* used?
+
+- Copied the real generator pom script to `check_ID_generate_pom_xml.py` (kept the real one untouched), changed it to use each repo's own name instead of `id=central` for the override slot.
+- Ran the same effective-pom check loop against both versions, compared output.
+- **Confirmed**: without `id=central`, Super POM's real Central leaks in as an *additional* repository every time — `A1a×B1a`/`A2×B1a`/`A3×B1a` all go from 1 repository to 2; `A2×B1c` from 2 to 3.
+- This settles a question flagged back on 24.07.2026
+
+## 5. Design decision: repository-ID strategy for the main experiment matrix
+
+- Can't vary ID as its own matrix dimension (would explode the cell count, and npm/pip have no equivalent "ID variable" — would break cross-ecosystem comparability). One fixed choice has to go into the real generator.
+- **Decision**: `id=central` override everywhere **except `A3×B1a`**, which now uses the repo's own ID (`maven-internal-hosted`) instead — meaning real Central leaks in *only* for that one cell.
+- Reasoning: `id=central` isn't an arbitrary choice — it's literally what Sonatype's own Nexus+Maven integration guide recommends, so it's the realistic default. `A3` is uniquely defined as "no public path" (unlike `A2`, whose definition always implies a public path exists *somewhere* even if this specific pairing doesn't expose it). so `A3×B1a` using its own ID models a company that *believes* they're fully isolated but isn't, which is exactly the insecure-configuration condition for this thesis
+- Implemented as a one-line conditional in `generate_pom_xml.py`'s `build_repositories_block()`, keyed on `a == "A3"`.
+- Consequence: `A3×B1a` is no longer a guaranteed `resolution_error` cell (that was the old expectation, from 06.07.2026, when A2 and A3 behaved identically under B1a). `A2×B1a` produce resolution error; `A3×B1a` now depends on B2 and whatever's live on real Central.
+
+## 6. Pilot cell run: real, reproducible dependency confusion success
+
+- Ran `A3×B1a×B2b×C1c` — the interesting combination: B2b is a version *range*, and the attacker package (`1.0.3`) is published on real Maven Central, only reachable now because of the design decision above.
+- **Result: both internal packages resolved to `1.0.3` from `https://repo.maven.apache.org/...`** — the attacker's package, not the real one from Nexus. A genuine DCA success, directly in the main matrix.
+- Confirmed via the raw Maven log this isn't Nexus caching: Maven queries `maven-metadata.xml` from *both* configured repos, picks the highest version across the combined pool (`1.0.3`), tries fetching it from each repo in turn — the Nexus hosted repo 404s (never had `1.0.3`), real Central serves it.
+- Ran `A3×B1a×B2a×C1c` (pinned version) as the paired negative control — resolved cleanly from Nexus, `1.0.0`, unaffected by the leak, since `1.0.0` was never published to real Central. Clean minimal pair for the findings chapter: same leaked config, safe under a pin, vulnerable under a range.
+
+## 7. Redesigned C1c's rebuild evidence: dropped `dependency:tree`, use `lockfile.json` twice instead
+
+- While reviewing the rebuild output, noticed `dependency-tree.json` (from `maven-dependency-plugin:tree`, same as C1a) only records name/version/scope — no resolved URL. Not useful enough for the classifier on its own.
+- Checked `lockfile.json`'s actual schema (confirmed via a real generated file): it already has `resolved` (URL) and `repositoryId` per dependency, on top of version/checksum,  everything `dependency-tree.json` has, plus provenance.
+- Considered keeping `dependency:tree` alongside a second lockfile capture, but realized both are **independent, full resolutions** against the same frozen POM (not "one resolution + a view of it") — running both is redundant work for no extra evidence.
+- **Final design**: 3 `mvn` calls, no `dependency:tree`: `generate` (setup) → `freeze` → `generate` again against the frozen POM (`_rebuild-lockfile.json`). Classifier reads `_rebuild-lockfile.json` only: package name + version + resolved URL + checksum.
+
+## 8. Found and explained a cache-only confound in `A2×B1a` pilot testing (not a real bug)
+
+- `A2×B1a` pilot run showed `BUILD SUCCESS`, but in `_rebuild-lockfile.json`, public dependencies (`javalin`, `jackson-databind`, etc.) all have **empty** `resolved`/`repositoryId` fields, with matching `[WARNING] Artifact resolved url ... not found` lines in the log — while the two internal packages have fully populated fields.
+- Explanation: `A2×B1a`'s repo list genuinely has no path to public packages, but Maven's core build phase silently reused a copy of `javalin` already sitting in the persistent dev container's local cache (left over from an earlier `A1a`/`A3` pilot cell) — so the overall build doesn't hard-fail. The `maven-lockfile` plugin's own remote-checksum verification is stricter and correctly flags these as unresolved from the *current* config.
+- **Conclusion**: the classifier signal should be per-dependency `resolved`/`repositoryId` (empty = not genuinely resolvable from this cell's config), not overall build status.
+- This cache-reuse issue is specific to pilot testing on the shared, persistent dev runner (only internal packages get purged between cells). The real experiment already avoids it — the existing design destroys the whole Docker container between cells, wiping `~/.m2` completely.
+
+## Commands used today
+
+```powershell
+# Effective-POM check (single combo, offline)
+python -c "import sys; sys.path.insert(0,'automation_process/config_generator'); from generate_pom_xml import generate_pom_xml; print(generate_pom_xml('A1a','B1a','B2a','http://host.docker.internal:8081'))" | Out-File -Encoding utf8 pom-test.xml
+mvn help:effective-pom -f pom-test.xml "-Doutput=effective-pom.xml"
+```
+```powershell
+# Full A x B1 effective-pom sweep (both the real generator and the ID-ablation copy)
+# see dump_pom_checks.ps1 + pom_override_check.py / check_ID_generate_pom_xml.py
+```
+
+## Next steps
+
+- [ ] Continue the pilot matrix: `A2×B1a` resolution-error regression (now understood correctly, see confound note above), invalid-combination checks (`A3×B1c`, any `B2c`).
+- [ ] Add the per-dependency `resolved`/`repositoryId` classifier rule to the actual central automated pipeline's classifier script (not just documented in the plan).
+- [ ] Consider whether the cache-confound insight is worth its own short note in the methodology chapter (pilot-testing artifact vs. real-experiment behavior).
+- [ ] build central automated pipeline
