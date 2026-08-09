@@ -47,3 +47,5 @@ services/java/pom.xml
 services/python/pylock.test.toml
 services/python/pylock.test3.toml
 services/python/test-install-report3.json
+effective-pom-checks
+ID-effective-pom-checks
