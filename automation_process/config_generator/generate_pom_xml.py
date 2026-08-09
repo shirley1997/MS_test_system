@@ -76,10 +76,11 @@ def build_repositories_block(a: str, b1: str, nexus_url: str) -> str:
     entries = []
 
     if b1 == "B1a":
-        # Override <id>central</id> with private URL -> override superPOM
-        # Only the private Nexus URL is queried. Id "central" is a Maven mechanism
-        # this will be verified in pilot with `mvn help:effective-pom` and `mvn -X` network trace.
-        entries.append(repository_entry("central", private_url))
+        if a == "A3":
+            entries.append(repository_entry(private_repo_name, private_url))  # use own repo name as ID -> maven Central public leaks in 
+        else:
+            entries.append(repository_entry("central", private_url))         # ID override 
+
 
     elif b1 == "B1b":
         # Explicit <id>central</id> pointing to real Maven Central + private repo.
