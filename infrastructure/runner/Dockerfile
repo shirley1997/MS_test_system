@@ -165,6 +165,13 @@ RUN useradd -m -s /bin/bash runner \
 USER runner
 WORKDIR /home/runner
 
+# new line added to fix the problem of Maven's built-in HTTP-blocker mirror
+# maven refuses to access HTTP repository since 3.8.1, redirect request to dummy 0.0.0.0
+# a setting.xml file is created and baked into image to override the block in default settings.xml
+RUN mkdir -p /home/runner/.m2
+COPY --chown=runner:runner settings.xml /home/runner/.m2/settings.xml
+
+
 
 # choose to use GitHub Actions runner binary v2.335.1 (Linux x64).
 # SHA-256 verification means the build fails if the tarball is correpted (protect integrity)
