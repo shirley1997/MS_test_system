@@ -37,7 +37,6 @@ desktop.ini
 # These shouldn't be in project folders, but just in case:
 .npmrc
 .pypirc
-settings.xml
 *.env
 *.secrets
 services/nodejs/package-lock.json
