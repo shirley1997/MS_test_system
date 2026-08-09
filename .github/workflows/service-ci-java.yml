@@ -178,6 +178,7 @@ jobs:
           LOCKFILE="${{ inputs.cell_id }}_lockfile.json"
           FROZEN_POM="${{ inputs.cell_id }}_pom.lockfile.xml"
           LOGFILE="${{ inputs.cell_id }}_mvn_lockfile_log.txt"
+          REBUILD_LOCKFILE="${{ inputs.cell_id }}_rebuild-lockfile.json"
 
           # 1. Setup: generate lockfile.json from the cell's actual resolution (A/B1/B2 config).
           mvn -B io.github.chains-project:maven-lockfile:5.17.3:generate \
@@ -191,21 +192,24 @@ jobs:
             exit 0
           fi
 
-          # 2. Rebuild: goal "freeze" pins every dependency to the lockfile's recorded version (no
-          #    resolution itself, just rewrites the POM), then dependency:tree resolves against that frozen POM
-          #  this is the step that is actually driven by the lockfile.
+          # 2. Freeze: pins every dependency to the lockfile's recorded version into a new POM
+          #    (pure in-memory transform, no resolution of its own).
           mvn -B io.github.chains-project:maven-lockfile:5.17.3:freeze \
             -DlockfileName="$LOCKFILE" \
             -DpomLockfileOutput="$FROZEN_POM" \
             2>&1 | tee -a "$LOGFILE" || true
 
+          # 3. Rebuild: a second, independent resolution against the frozen (pinned) POM.
+          #    This is the actual "rebuild with lockfile" evidence -- one file with
+          #    name + version + resolved URL + checksum, directly comparable to the setup lockfile.
           if [ -f "$FROZEN_POM" ]; then
-            mvn -B -f "$FROZEN_POM" org.apache.maven.plugins:maven-dependency-plugin:3.11.0:tree \
-              -DoutputFile="${{ inputs.cell_id }}_rebuild-dependency-tree.json" \
-              -DoutputType=json \
+            mvn -B io.github.chains-project:maven-lockfile:5.17.3:generate \
+              -f "$FROZEN_POM" \
+              -DlockfileName="$REBUILD_LOCKFILE" \
+              -DincludeMavenPlugins=false \
               2>&1 | tee -a "$LOGFILE" || true
           else
-            echo "[C1c] freeze phase failed: no pom.lockfile.xml can be produced." | tee -a "$LOGFILE"
+            echo "[C1c] freeze phase failed: no pom.lockfile.xml produced." | tee -a "$LOGFILE"
           fi
 
 
@@ -226,6 +230,6 @@ jobs:
             services/java/${{ inputs.cell_id }}_invalid.txt
             services/java/${{ inputs.cell_id }}_lockfile.json
             services/java/${{ inputs.cell_id }}_pom.lockfile.xml
-            services/java/${{ inputs.cell_id }}_rebuild-dependency-tree.json
+            services/java/${{ inputs.cell_id }}_rebuild-lockfile.json
             services/java/${{ inputs.cell_id }}_mvn_lockfile_log.txt
           if-no-files-found: warn
