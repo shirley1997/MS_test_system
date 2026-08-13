@@ -50,3 +50,4 @@ services/python/test-install-report3.json
 effective-pom-checks
 ID-effective-pom-checks
 maven_lockfile_example.json
+automation_process/central_automated_pipeline/checkpoint.json
