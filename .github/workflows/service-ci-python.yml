@@ -47,7 +47,7 @@ jobs:
     steps:
       # 1. Get the repo to the runner.
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       
       #additional step: clean up (only for development phase)
@@ -203,7 +203,7 @@ jobs:
       # 7. Upload the resolution output (install-report.json + command outputs) as one artifact.
 #    The central automated pipeline will download and classify it, and write one row to results.csv.
       - name: Upload raw resolution output of pip (package manager)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.cell_id }}_pip_raw
           path: |
