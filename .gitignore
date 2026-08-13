@@ -49,3 +49,4 @@ services/python/pylock.test3.toml
 services/python/test-install-report3.json
 effective-pom-checks
 ID-effective-pom-checks
+maven_lockfile_example.json
