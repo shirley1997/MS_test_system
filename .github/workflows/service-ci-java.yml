@@ -117,6 +117,10 @@ jobs:
             -DoutputFile="${{ inputs.cell_id }}_dependency-tree.json" \
             -DoutputType=json \
             2>&1 | tee "${{ inputs.cell_id }}_mvn_log.txt" || true
+
+          mvn -B io.github.chains-project:maven-lockfile:5.17.3:generate -DoutputFile="${{ inputs.cell_id }}_lockfile.json" -DincludeMavenPlugins=false
+
+          
  
       # C1b (package update): 2-phase (setup + update)
       #   Phase 1 (setup, REAL resolve of pinned 1.0.0): swap pom.xml -> fixed_pom.xml (pinned <version>1.0.0</version>),
@@ -159,6 +163,9 @@ jobs:
             -DoutputFile="${{ inputs.cell_id }}_dependency-tree.json" \
             -DoutputType=json \
             2>&1 | tee "${{ inputs.cell_id }}_mvn_log.txt" || true
+          
+          mvn -B io.github.chains-project:maven-lockfile:5.17.3:generate -DoutputFile="${{ inputs.cell_id }}_lockfile.json" -DincludeMavenPlugins=false
+
  
       # C1c: rebuild with lockfile 
       # update 08.08.2026: maven doesn't have native lockfile, but third party has proposed a maven-lockfile plugin
