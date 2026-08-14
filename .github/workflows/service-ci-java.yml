@@ -50,7 +50,7 @@ jobs:
           rm -f pom.xml pom_cell.xml
           rm -rf target
           rm -f ${{ inputs.cell_id }}_*.txt ${{ inputs.cell_id }}_*.json
-          rm -rf ~/.m2/repository/io/github/shirley1997/thesis || true
+          rm -rf ~/.m2/repository || true
           echo "workspace cleaned (internal packages cleaned from ~/.m2, plugins + public dependencies kept)"
 
       # 2. Echo the cell inputs so the workflow log shows which cell ran.
