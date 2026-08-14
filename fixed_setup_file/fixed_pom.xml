@@ -17,7 +17,7 @@
     <repositories>
         <repository>
             <id>nexus-group-public-first</id>
-            <url>http://localhost:8081/repository/maven-group-public-first/</url>
+            <url>http://host.docker.internal:8081/repository/maven-group-public-first/</url>
         </repository>
     </repositories>
 
