@@ -1731,4 +1731,91 @@ mvn help:effective-pom -f pom-test.xml "-Doutput=effective-pom.xml"
 - [ ] Continue the pilot matrix: `A2×B1a` resolution-error regression (now understood correctly, see confound note above), invalid-combination checks (`A3×B1c`, any `B2c`).
 - [ ] Add the per-dependency `resolved`/`repositoryId` classifier rule to the actual central automated pipeline's classifier script (not just documented in the plan).
 - [ ] Consider whether the cache-confound insight is worth its own short note in the methodology chapter (pilot-testing artifact vs. real-experiment behavior).
+
+# 13 & 14.08.2026 central automated pipeline: requirements, design, and Phase 1-5 implementation
+
+- **Stand: Worked out the technical requirements and design for the central automated pipeline (the last unbuilt piece from the 30.06.2026 design), then implemented and pilot-tested Phase 1 through Phase 5 of it (matrix generation, checkpoint, result CSV, classification logic, Nexus cache invalidation). Found and fixed a real logic bug in `service-ci-java.yml`'s C1b step along the way.**
+
+## 1. Determined the technical requirements for the central automated pipeline
+
+- Went through my requirements: generate the full experiment matrix as CSV, mark invalid cells without dispatching them, support running the whole matrix / one cell / a subset (needed later for sub-RQ2, to rerun only the vulnerable cells), a checkpoint file so an interrupted run can resume, centralized classification (not inside the service pipelines), and cache isolation between cells (Nexus + runner).
+- Used section 5.3 of the thesis (the original, implementation-light pipeline design) plus the 30.06.2026 dev-log design as the starting point, then refined it together based on my review.
+- Confirmed section 6.5 ("Central Automation Pipeline") in the thesis draft is still just an empty heading — nothing to reconcile against, 5.3 stays the authoritative source.
+
+## 2. Key design decisions made today
+
+- **Checkpoint file**: `.checkpoint.json`, a plain JSON array of finished `cell_id`s (no per-cell status). A cell counts as done just by being in the file — matches the fact that every cell only ever gets one attempt.
+- **Single script file**, not several modules: `automation_process/central_automated_pipeline/central_automated_pipeline.py`. All phases are functions in one file, so shared setup (Nexus URL, repo owner/name, constants) only has to be written once.
+- **`cell_id` format**: `{ecosystem_short}_{A}_{B1}_{B2}_{C1}`, e.g. `npm_A1a_B1a_B2a_C1a` — self-describing, stable across re-generating the matrix.
+- **`results.csv` is the single source of truth** — every one of the 432 cells gets a row, valid or invalid, so I never have to cross-reference two files. Invalid cells' rows get appended once, after the whole run finishes, from `experiment_matrix.csv`'s invalid rows, so it doesn't slow down or risk the real run.
+- **Classification categories stay exactly `malicious_resolved` / `private_resolved` / `resolution_error` / `invalid_configuration`** — no extra "packages disagree" category. Reasoning: if even one of the two internal packages resolves to the attacker's version, that's already a successful attack on that cell, regardless of what the other package did — checked with priority, before anything else.
+- **Nexus cache invalidation**: corrected from an earlier assumption — the real Sonatype API uses **POST**, not DELETE, and I also need to invalidate the **group repo's own cache** (not just the underlying proxy) for `A1a`/`A1b` cells, since group repos have their own metadata-merge cache layer on top of their members'.
+- **Ephemeral runner (`--ephemeral`) postponed on purpose** — decided to keep the current persistent-registration runner for now, since I still want to do several manual pilot dispatches against the service pipelines to catch logic errors, and ephemeral mode would mean a fresh container + token per single manual test, which is slower to iterate with. Will switch to `--ephemeral` once pilot testing is done and I move to the automated dispatch-loop phases.
+
+## 3. Implemented Phase 1 - 5 of `central_automated_pipeline.py`
+
+- **Phase 1 (matrix generation)**: `is_valid_combination()`, `generate_matrix()`, `write_matrix_csv()`. Verified: 432 rows total, 360 valid / 72 invalid, matches the hand-calculated expectation (`A3×B1c` = 27 rows, `java×B2c` = 48 rows, 3 rows counted in both).
+- **Phase 2 (checkpoint)**: `load_finished_cells()`, `mark_cell_as_finish()`, `is_finished()`. Verified by marking two fake cell_ids finished and checking `is_finished()` returns `True`/`True`/`False` correctly.
+- **Phase 3 (results.csv writer)**: `write_result_file()`, appends one row per cell using placeholder test data.
+- **Phase 4 (classification)**: `read_npm_evidence()`, `read_pip_evidence()`, `read_java_evidence()`, `classify_logic()`. Verified against hand-built fake evidence lists (None / private / malicious / partial-count / unrecognized-version), and against two real sample files already in the repo (`services/python/test-install-report3.json`, `maven_lockfile_example.json`).
+- **Phase 5 (Nexus cache invalidation)**: `invalidate_nexus_cache()`. Tested against the real local Nexus instance.
+
+## 4. Bugs found and fixed while implementing (implement and test one function/phase at a time)
+
+- `=` vs `==` mixups (assignment vs comparison) in `is_valid_combination`.
+- `&` vs `and` for combining conditions.
+- `{}` creates an empty dict, not an empty set — needed `set()` for the checkpoint's in-memory representation.
+- `.add()` (and other in-place methods like `.append()`) return `None`, not the updated object — a very easy trap.
+- `json.loads()` (parses a string) vs `json.load()` (reads directly from a file object) mixed up in several places.
+- A `path` function parameter that was defined but never actually used inside the function (fell back to a hardcoded/global path instead) — same file referenced three different ways in one function.
+- `csv.DictWriter` needs append mode (`'a'`) to add rows without erasing the file; checking "does the file exist" has to happen *before* opening in append mode, since opening in append mode creates the file immediately.
+- A classic operator-precedence bug: `if value == "C1a" or "C1b":` always evaluates true, regardless of `value`, because a non-empty string is always truthy on its own — needed `value == "C1a" or value == "C1b"`.
+- Wrong field-name casing (`artifactID` vs the real `artifactId`) when reading the Maven lockfile JSON.
+- A spelling typo (`classificaton_result` vs `classification_result`) silently created a second, unused variable — the function always returned an empty string regardless of the branches, since Python doesn't error on typo'd variable names, it just makes a new one.
+- Classification logic first drafted as a per-package loop that overwrote its own result each iteration, silently losing a `malicious_resolved` verdict if the other package happened to be checked last. Fixed by checking malicious across *all* evidence first (with an early return), before deciding `private_resolved`.
+- A Windows-specific `UnicodeDecodeError` (`'charmap' codec can't decode byte...`) from opening files without `encoding='utf-8'` — Windows' default codec can't read UTF-8 content (the JSON test fixture had emoji/special characters embedded in it). Fixed by adding `encoding='utf-8'` to every `open()` call.
+- `invalidate_nexus_cache` bugs: used the global `A` list instead of the function's own `A` parameter (would have crashed trying to use a list as a dict key); computed the group-repo URL unconditionally instead of only for `A1a`/`A1b` (would have crashed with `KeyError` for `A2`/`A3` cells); called the proxy invalidation twice; had two `return` statements in a row, so the group-repo response was always silently discarded (the second `return` is unreachable dead code).
+
+## 5. Bug found in `service-ci-java.yml`'s C1b step (not part of the central pipeline script, found while reviewing the workflow for Phase 4/8 groundwork)
+
+- The comment right before Phase 2 says "Restore the cell's actual pom.xml for phase 2", but the actual restore command (`mv pom_cell.xml pom.xml`) was missing on the success path — only present in the earlier failure-path branch. So when setup succeeds, Phase 2 was silently resolving against the leftover *fixed/pinned setup* pom.xml instead of the cell's real A/B1/B2 configuration, for both the dependency-tree output and the `maven-lockfile:generate` call right after it.
+- Fix identified: add `mv pom_cell.xml pom.xml` right before Phase 2 starts. Not yet applied to the workflow file.
+- Decided the failure-path restore (before the early `exit 0`) isn't strictly necessary for correctness (Phase 2 never runs after that exit anyway) — it only affects whether the *uploaded artifact* for a failed cell shows the right pom.xml for manual debugging, not classification (the classifier never reads pom.xml).
+
+## 6. Nexus authentication
+
+- Assumed anonymous access might cover cache invalidation (per the 10.07.2026 finding that anonymous *read* was enabled) — turned out to be wrong. Got `403 Forbidden` on both the proxy and group repo invalidation calls.
+- Added `python-dotenv`, created a gitignored `.env` file at the repo root with `NEXUS_ADMIN_USER`/`NEXUS_ADMIN_PASS`, loaded via `load_dotenv()`, and passed `auth=(user, pass)` into the `requests.post()` calls.
+
+## Commands used today
+
+```powershell
+# test Nexus cache invalidation (see central_automated_pipeline.py phase 5: nexus invalidation)
+request.post(api, auth=(username, password))
+
+# command for obtain registration token for a new runner (needed for automated main experiment)
+gh api --method POST -H "Accept: application/vnd.github+json" repos/shirley1997/MS_test_system/actions/runners/registration-token --jq .token
+
+# install python-dotenv in order to read .env file (for nexus authentication, otherwise cache invalidation api returns code 403)
+pip install python-dotenv
+```
+
+## Links & resources collected today
+
+- [GitHub Docs — self-hosted runner software updates](https://docs.github.com/en/actions/reference/runners/self-hosted-runners#runner-software-updates-on-self-hosted-runners): explains the `--disableupdate` flag on `config.sh`, used to stop GitHub silently auto-updating the runner binary (already applied in `entrypoint.sh` on 08.08.2026, this is just the source doc for it).
+- [Sonatype REST API reference](https://help.sonatype.com/en/api-reference.html): confirms the actual cache-invalidation endpoint is `POST /v1/repositories/{repositoryName}/invalidate-cache` servers: /service/rest
+- [GitHub REST API — self-hosted runners](https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2026-03-10): how to automatically obtain a runner registration token via the API instead of the GitHub UI. needed so the central pipeline can register a fresh ephemeral runner per cell without manual steps.
+- [`gh workflow run` manual](https://cli.github.com/manual/gh_workflow_run):  run a workflow file using github CLI. how to trigger a `workflow_dispatch` workflow with inputs from the command line.
+- [`gh run watch` manual](https://cli.github.com/manual/gh_run_watch): watches a workflow run until it finishes, showing progress. used to block the central pipeline until a cell's CI run completes before downloading its artifact.
+- [`argparse` examples](https://stackoverflow.com/questions/7427101/simple-argparse-example-wanted-1-argument-3-results) and [official Python `argparse` HOWTO](https://docs.python.org/3/howto/argparse.html): for building the pipeline's command-line interface (run the whole matrix / one cell / a subset of cells). the subset option is specifically needed for sub-RQ2, to rerun only the cells that came out `malicious_resolved`.
+- [Git Tower — `git rev-parse` FAQ](https://www.git-tower.com/learn/git/faq/git-rev-parse): Git Rev-Parse: `git rev-parse` is a command that takes a Git reference (like a branch name, tag, or commit hash) as input and outputs the corresponding object ID. In simpler terms, it translates human-readable Git references into their internal object representations. this command is used to record which exact commit produced each row in `results.csv`. (a unique reference)
+
+## Next steps
+
+- [ ] Apply the missing `mv pom_cell.xml pom.xml` fix to `service-ci-java.yml`'s C1b step.
+- [ ] Continue manual pilot dispatches against the service pipelines to catch remaining logic errors before adding `--ephemeral`.
+- [ ] Phase 6: add `--ephemeral` to `entrypoint.sh`, rebuild the runner image, once pilot testing is done.
+- [ ] Phase 7: runner lifecycle functions (obtain registration token, start container, wait for online).
+- [ ] Phase 8: workflow dispatch + artifact download functions.
+- [ ] Phase 9: full orchestration loop + CLI (`--matrix` / `--run-all` / `--cell` / `--cells`).
 - [ ] build central automated pipeline
