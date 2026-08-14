@@ -12,6 +12,7 @@
 - build: 1.2.2
 - twine: 6.1.0 (keyring: 25.7.0, packaging: 26.2, requests: 2.32.5, requests-toolbelt: 1.0.0, urllib3: 2.7.0, id: 1.6.1)
 - flask: 3.1.1
+- python-dotenv-1.2.2
 
 ## java
 - java 25.0.3 2026-04-21 LTS

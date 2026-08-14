@@ -11,6 +11,9 @@ import json
 from pathlib import Path
 import datetime
 import subprocess
+import requests
+import dotenv    # need this to read .env file (for nexus authentication)
+import os
 
 
 A = ["A1a", "A1b", "A2", "A3"]     # nexus repository
@@ -27,6 +30,25 @@ internal_packages = {
     "python": ["xueting-thesis-event-fengfu", "xueting-thesis-service-zhuanfa"],
     "java": ["xueting-thesis-event-juhe", "xueting-thesis-result-fanhui"],
 }   # a dict
+nexus_url = "http://localhost:8081"
+proxy_repo = {
+    "nodejs": "npm-public-proxy",
+    "python": "pypi-public-proxy",
+    "java": "maven-public-proxy"
+}# a dict
+
+group_repo = {"nodejs": {"A1a": "npm-group-public-first", "A1b": "npm-group-private-first"}, 
+              "python": {"A1a": "pypi-group-public-first", "A1b": "pypi-group-private-first"}, 
+              "java": {"A1a": "maven-group-public-first", "A1b": "maven-group-private-first"}
+              }
+
+dotenv.load_dotenv()
+nexus_username = os.environ.get("nexus_username")
+nexus_password = os.environ.get("nexus_password")
+
+
+
+
 
 
 # phase 1: determine invalid combination & generate experiment matrix
@@ -67,7 +89,7 @@ def generate_matrix() -> list[dict]:
 
 def write_matrix_csv(rows_in_matrix, path):
     columns = ["cell_id", "ecosystem", "A - private registry configuration", "B1 - package manager configuration", "B2 - version specifier", "C - pipeline operation type", "valid?", "invalid_reason"]
-    with open(path, 'w', newline='') as csvfile:
+    with open(path, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=columns)
         writer.writeheader()
         for cell in rows_in_matrix:
@@ -81,7 +103,7 @@ def load_finished_cells(checkpoint_path) -> set:
     if Path(checkpoint_path).is_file() == False:   # check if checkpoint file exist
         return set()
     else:
-        with open(checkpoint_path) as f:
+        with open(checkpoint_path, encoding='utf-8') as f:
             checkpoint_list = json.load(f)   #json.load(f) return a python list
 
         return set(checkpoint_list)     # convert loaded list to a set, set can prevent duplication
@@ -89,7 +111,7 @@ def load_finished_cells(checkpoint_path) -> set:
 def mark_cell_as_finish(checkpoint_path, cell_id):
     finished_cells = load_finished_cells(checkpoint_path)
     finished_cells.add(cell_id)               # set should add new element in place!
-    with open(checkpoint_path, "w") as f:
+    with open(checkpoint_path, "w", encoding='utf-8') as f:
         json.dump(list(finished_cells), f)    # the updated set needs to convert back to list before dump back to checkpoint.json file
 
 
@@ -111,8 +133,10 @@ def write_result_file(result_file_path, row_to_append):
                "pk1_name", "pk1_version", "pk1_url",
                "pk2_name", "pk2_version", "pk2_url",
                 "artifact_path", "git_commit", "github_run_id"]
+
+    #check if file exist first! if the file is already opened, it will always return true
     file_already_exist = Path(result_file_path).is_file()
-    with open(result_file_path, 'a', newline='') as csvfile:
+    with open(result_file_path, 'a', newline='', encoding='utf-8') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=columns)
         if file_already_exist == False:     # only write header if file doesn't exist yet, otherwise more than one row header
             writer.writeheader()
@@ -120,48 +144,118 @@ def write_result_file(result_file_path, row_to_append):
 
 
 # phase 4: the classification logic
+# the following 3 ecosystem-specific functions are used to check artifact uploaded from service pipeline
+# will return a list[dict] for found internal package information
+#example return value: [{"name": str, "version": str, "url": str}, {"package": str, "version": str, "url": str}]
 
 def read_npm_evidence(package_lock_path) -> list[dict]:
     try:
-        with open(package_lock_path, 'r') as json_File:
+        with open(package_lock_path, 'r', encoding='utf-8') as json_File:
             package_lock_data = json.load(json_File)
-        
-    except:
-        return None
-def read_pip_evidence(install_report_path) -> list[dict]:
-    try:
-        with open(install_report_path, 'r') as json_File:
-            pinstall_report_data = json.load(json_File)
-        
-    except:
-        return None
-def read_java_evidence(java_cell) -> list[dict]:
-    try:
-        if java_cell["C - pipeline operation type"] == "C1a" or java_cell["C - pipeline operation type"] == "C1b":
-            mvn_lockfile_data = json.load(f'{java_cell.cell_id}_lockfile.json')
-        else:
-            mvn_lockfile_data = json.loads(f'{java_cell.cell_id}_rebuild_lockfile.json')
-
-        return list[dict]
     except:
         return None
     
-def classify_logic(ecosystem, evidence_files) -> str:
-    classification_result = ""
-    if evidence_files == None:
-        classificaton_result = "resolution_error"
-    if package.version in malicious_version:
-        classificaton_result = "malicious_resolved"
-    if package.version in internal_version:
-        classificaton_result = "private_resolved"
-    else:
-        classificaton_result = "resolution_error"
-    return classification_result
+    npm_package_found = []     # create an empty list
+    package_area = package_lock_data["packages"]
+
+    for npm_package_name in internal_packages["nodejs"]:
+        for package_key, info in package_area.items():
+            if package_key == f"node_modules/{npm_package_name}":
+                npm_package_found.append(
+                    {"name": npm_package_name,
+                     "version": info.get("version"),
+                     "url": info.get("resolved"),}
+                )
+    return npm_package_found
+
+def read_pip_evidence(install_report_path) -> list[dict]:
+    try:
+        with open(install_report_path, 'r', encoding='utf-8') as json_File:
+            install_report_data = json.load(json_File)   
+    except Exception as e:
+        print(e)
+        return None
+
+    pip_package_found = []     # create an empty list
+    package_area = install_report_data["install"]   # "install" is a list
+
+    for pip_package_name in internal_packages["python"]:
+        for item in package_area:
+            if item["metadata"].get("name") == pip_package_name:
+                pip_package_found.append(
+                    {   "name": pip_package_name,
+                        "version": item["metadata"].get("version"),
+                        "url": item["download_info"].get("url"),}
+                )
+    return pip_package_found
+
+def read_java_evidence(java_cell) -> list[dict]:
+    cell_id = java_cell["cell_id"]
+    java_c1_value = java_cell["C - pipeline operation type"]
+    try:
+        if java_c1_value == "C1a" or java_c1_value == "C1b":
+            with open(f"{cell_id}_lockfile.json", 'r', encoding='utf-8') as json_file:
+                mvn_lockfile_data = json.load(json_file)    # json_file is a file object, json.load() should be used here
+        else:
+            with open(f"{cell_id}_rebuild-lockfile.json", 'r', encoding='utf-8') as json_file:            
+                mvn_lockfile_data = json.load(json_file)
+    except:
+        return None
+
+    mvn_package_found = []     # create an empty list
+    package_area = mvn_lockfile_data["dependencies"]   # "dependencies" is a list
+    
+    for mvn_package_name in internal_packages["java"]:
+        for item in package_area:
+            if item["artifactId"] == mvn_package_name:
+                mvn_package_found.append(
+                    {   "name": mvn_package_name,
+                        "version": item["version"],
+                        "url": item["resolved"],
+                    }
+                )
+    return mvn_package_found
+    
+# package_evidence is the list[dict] (or None) which is the return value from the 3 functions above
+# the classification logic need to be checked again
+
+def classify_logic(ecosystem, package_evidence) -> str:
+    
+    if package_evidence == None:
+        return "resolution_error"
+    for evidence in package_evidence:
+        if evidence["version"] in malicious_version:
+            return "malicious_resolved"
+
+    expected_count = len(internal_packages[ecosystem])
+    count_in_evidence = 0
+    for evidence in package_evidence:
+        if evidence["version"] in internal_version:
+            count_in_evidence += 1
+    if count_in_evidence == expected_count:
+            return "private_resolved"
+        
+
+    return "resolution_error"
 
 
 
+# phase 5: nexus cache invalidation for group repo and proxy repo
+# the requests for cache invalidation needs authentication! otherwise obtain code 403
 
+def invalidate_nexus_cache(ecosystem, cell_A_option):
+    proxy_invalidate_url = f"{nexus_url}/service/rest/v1/repositories/{proxy_repo[ecosystem]}/invalidate-cache" 
+    proxy_invalidate_response = requests.post(proxy_invalidate_url, auth=(nexus_username, nexus_password))
+    if proxy_invalidate_response.status_code != 204:
+        print(f"proxy repo cache invalidation did not succeed. code {proxy_invalidate_response.status_code} for {proxy_repo[ecosystem]}")
+    print(f"cache of {proxy_repo[ecosystem]} discarded")
 
+    if cell_A_option == "A1a" or cell_A_option == "A1b":
+        group_invalidate_url = f"{nexus_url}/service/rest/v1/repositories/{group_repo[ecosystem][cell_A_option]}/invalidate-cache"
+        group_invalidate_response = requests.post(group_invalidate_url, auth=(nexus_username, nexus_password))
+        if group_invalidate_response.status_code != 204:
+            print(f"group repo cache invalidation did not succeed. code {group_invalidate_response.status_code} for {group_repo[ecosystem][cell_A_option]}")
+        print(f"cache of {proxy_repo[ecosystem]} and {group_repo[ecosystem][cell_A_option]} discarded")
 
 
 
@@ -207,3 +301,34 @@ if __name__ == "__main__":
 }
 
     write_result_file(result_file_path, test_row)
+
+
+    #  test for phase 4
+    print(classify_logic("nodejs", None))    # verified result: resolution_error
+
+    print(classify_logic("nodejs", [
+    {"name": "xueting-thesis-event-jianding", "version": "1.0.0", "url": "x"},
+    {"name": "xueting-thesis-service-fasong", "version": "1.0.0", "url": "x"},
+]))
+
+    print(classify_logic("nodejs", [
+    {"name": "xueting-thesis-event-jianding", "version": "1.0.3", "url": "x"},
+    {"name": "xueting-thesis-service-fasong", "version": "1.0.0", "url": "x"},
+]))
+
+    print(classify_logic("nodejs", [
+    {"name": "xueting-thesis-event-jianding", "version": "1.0.0", "url": "x"},
+]))     
+    print(classify_logic("nodejs", [
+    {"name": "xueting-thesis-event-jianding", "version": "2.5.0", "url": "x"},
+    {"name": "xueting-thesis-service-fasong", "version": "1.0.0", "url": "x"},
+]))
+
+
+    package_evidence = read_pip_evidence(Path("services/python/test-install-report3.json"))
+    print(classify_logic("python", package_evidence))
+
+# a test for phase 5
+    invalidate_nexus_cache("nodejs", "A1a")
+
+

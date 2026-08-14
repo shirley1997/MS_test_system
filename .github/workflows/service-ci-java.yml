@@ -151,11 +151,12 @@ jobs:
           if [ ! -s "${{ inputs.cell_id }}_setup-dependency-tree.json" ]; then
             echo "[C1b] setup phase: initial resolve failed, no dependency tree produced. skip update phase." \
               | tee "${{ inputs.cell_id }}_mvn_log.txt"
-            mv pom_cell.xml pom.xml
+            
             exit 0
           fi
  
           # Restore the cell's actual pom.xml for phase 2
+          mv pom_cell.xml pom.xml
           echo "[C1b] internal packages successfully resolved into ~/.m2. now running update resolve."
  
           #Phase 2: update (resolve with cell's B2 specifier, -U forces metadata re-check) ----
