@@ -40,9 +40,6 @@ jobs:
         uses: actions/checkout@v7
 
       # additional step: clean up (only for development phase)
-      # Maven-specific note: we keep the shared ~/.m2/repository so Maven plugins and public deps
-      # stay cached across cells (fast). But we purge the internal packages' cached artifacts,
-      # so each cell starts with no "already-resolved" internal package state.
       
       - name: Clean the filesystem before next cell run
         working-directory: services/java
