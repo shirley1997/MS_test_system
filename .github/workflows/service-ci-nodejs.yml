@@ -97,7 +97,7 @@ jobs:
                 print(npmrc_content)
           except ValueError as e:
             with open(invalid_combi, "w") as file:
-              file.write(f"invalid_combination: A={A}, B1={B1} -> {e}")
+              file.write(f"A={A}, B1={B1} -> {e}")
             print(f"step [generate_npmrc] this combination is invalid: {e}")
           PY
 

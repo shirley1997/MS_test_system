@@ -84,18 +84,25 @@ jobs:
           B1 = "${{ inputs.B1 }}"
           nexus_url = "http://host.docker.internal:8081"
 
-          content = generate_pipconf(A, B1, nexus_url)
-
           target = "services/python/pip.conf"
-          if content is None:
-              if os.path.exists(target):
-                  os.remove(target)
-              print(f"[generate_pip.conf] variable B1d: no pip.conf file is written in {target}.")
-          else:
-              with open(target, "w") as f:
-                  f.write(content)
-              print(f"[generate_pip.conf] wrote {target}:")
-              print(content)
+          invalid_combi = "services/nodejs/${{ inputs.cell_id }}_invalid.txt"
+
+          try:
+            pipconf_content = generate_pipconf(A, B1, nexus_url)
+
+            if pipconf_content is None:
+                if os.path.exists(target):
+                    os.remove(target)
+                print(f"step [generate_pip.conf] variable B1d: no pip.conf file is written in {target}.")
+            else:
+                with open(target, "w") as f:
+                    f.write(pipconf_content)
+                print(f"step [generate_pip.conf] is already written into {target}:")
+                print(pipconf_content)
+          except ValueError as e:
+            with open(invalid_combi, "w") as file:
+              file.write(f"A={A}, B1={B1} -> {e}")
+            print(f"step [generate_pip.conf] this combination is invalid: {e}")
           PY
 
       # 4. apply B2 (version specifier): pinned / (close) ranged / unspecified
@@ -126,6 +133,11 @@ jobs:
         env:
             PIP_CONFIG_FILE: ${{ inputs.B1 != 'B1d' && format('{0}/services/python/pip.conf', github.workspace) || '' }}
         run: |
+            if [ -f "${{ inputs.cell_id }}_invalid.txt" ]; then
+              echo "skip: invalid A/B1 combination"
+              exit 0
+            fi
+
             pip install --dry-run --ignore-installed \
             --report "${{ inputs.cell_id }}_install-report.json" \
             . 2>&1 | tee "${{ inputs.cell_id }}_pip_log.txt" || true
@@ -140,7 +152,12 @@ jobs:
         env:
           PIP_CONFIG_FILE: ${{ inputs.B1 != 'B1d' && format('{0}/services/python/pip.conf', github.workspace) || '' }}
         run: |
-          
+          if [ -f "${{ inputs.cell_id }}_invalid.txt" ]; then
+              echo "skip: invalid A/B1 combination"
+              exit 0
+          fi
+
+
           mv pyproject.toml pyproject_cell.toml
           cp "${{ github.workspace }}/fixed_setup_file/fixed_pyproject.toml" pyproject.toml
 
@@ -181,6 +198,12 @@ jobs:
         env:
           PIP_CONFIG_FILE: ${{ inputs.B1 != 'B1d' && format('{0}/services/python/pip.conf', github.workspace) || '' }}
         run: |
+          if [ -f "${{ inputs.cell_id }}_invalid.txt" ]; then
+              echo "skip: invalid A/B1 combination"
+              exit 0
+          fi
+
+
           pip lock --only-deps --output "pylock.${{ inputs.cell_id }}.toml" . \
             2>&1 | tee "${{ inputs.cell_id }}_pip_setup_log.txt" || true
 
@@ -213,6 +236,7 @@ jobs:
             services/python/${{ inputs.cell_id }}_install-report.json
             services/python/${{ inputs.cell_id }}_pip_log.txt
             services/python/${{ inputs.cell_id }}_pip_setup_log.txt
+            services/python/${{ inputs.cell_id }}_invalid.txt
 
           if-no-files-found: warn
           #changed from error to warn. because now some listed files (like the setup log for non-C1c cells) won't exist
