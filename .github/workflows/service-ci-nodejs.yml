@@ -67,7 +67,7 @@ jobs:
           echo "A       = ${{ inputs.A }}"
           echo "B1      = ${{ inputs.B1 }}"
           echo "B2      = ${{ inputs.B2 }}"
-          echo "C1      = ${{ inputs.C1 }} "
+          echo "C1      = ${{ inputs.C1 }}"
 
       # 3. Generate .npmrc for this cell and write it into directory services/nodejs/
       #The generator prints .npmrc file content on stdout, or nothing if variable B1d
@@ -82,18 +82,23 @@ jobs:
           B1 = "${{ inputs.B1 }}"
           nexus_url = "http://host.docker.internal:8081"
 
-          content = generate_npmrc(A, B1, nexus_url)
-
           target = "services/nodejs/.npmrc"
-          if content is None:
-              if os.path.exists(target):
-                  os.remove(target)
-              print(f"[generate_npmrc] variable B1d: no .npmrc file is written in {target}.")
-          else:
-              with open(target, "w") as f:
-                  f.write(content)
-              print(f"[generate_npmrc] wrote {target}:")
-              print(content)
+          invalid_combi = "services/nodejs/${{ inputs.cell_id }}_invalid.txt"
+          try:
+            npmrc_content = generate_npmrc(A, B1, nexus_url)
+            if npmrc_content is None:
+                if os.path.exists(target):
+                    os.remove(target)
+                print(f"step [generate_npmrc] variable B1d: no .npmrc file is written in {target}.")
+            else:
+                with open(target, "w") as f:
+                    f.write(npmrc_content)
+                print(f"step [generate_npmrc] is already written into {target}:")
+                print(npmrc_content)
+          except ValueError as e:
+            with open(invalid_combi, "w") as file:
+              file.write(f"invalid_combination: A={A}, B1={B1} -> {e}")
+            print(f"step [generate_npmrc] this combination is invalid: {e}")
           PY
 
       # 4. apply B2 (version specifier): pinned / (close) ranged / unspecified
@@ -122,6 +127,11 @@ jobs:
         working-directory: services/nodejs
         continue-on-error: true
         run: |
+          if [ -f "${{ inputs.cell_id }}_invalid.txt" ]; then
+            echo "skip: invalid A/B1 combination"
+            exit 0
+          fi
+
           npm install --package-lock-only 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
       
       # C1b: package update situation: copy the fixed package-lock.json to the service directory
@@ -132,6 +142,11 @@ jobs:
         working-directory: services/nodejs
         continue-on-error: true
         run: |
+          if [ -f "${{ inputs.cell_id }}_invalid.txt" ]; then
+            echo "skip: invalid A/B1 combination"
+            exit 0
+          fi
+
           cp "${{ github.workspace }}/fixed_setup_file/npm-service-fixed-lock.json" package-lock.json
           echo "[Apply C1b] copied fixed lockfile into npm service directory"
           npm update xueting-thesis-event-jianding xueting-thesis-service-fasong --package-lock-only 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
@@ -144,6 +159,11 @@ jobs:
         working-directory: services/nodejs
         continue-on-error: true
         run: |
+          if [ -f "${{ inputs.cell_id }}_invalid.txt" ]; then
+            echo "skip: invalid A/B1 combination"
+            exit 0
+          fi
+
           npm install --package-lock-only 2>&1 | tee "${{ inputs.cell_id }}_npm_setup_log.txt" || true
           if [ ! -f package-lock.json ]; then
             echo "[C1c] initial install failed: no lockfile generated. skip running npm ci." | tee "${{ inputs.cell_id }}_npm_log.txt"
@@ -159,8 +179,8 @@ jobs:
       # IMPORTANT: the planned command "npm install --dry-run --json" only shows package name + version -> not optimal to use here
       # We save stdout of resolution command to a file and upload it together with package-lock.json,
       # because the result "resolution_error" should also be inspected
+  
       
-      # -------------------------------------------------------------------
       # - name: Run npm install --package-lock-only
       #   id: run_npm
       #   working-directory: services/nodejs
@@ -168,7 +188,7 @@ jobs:
       #   continue-on-error: true
       #   run: |
       #     npm install --package-lock-only 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
-      # -------------------------------------------------------------------
+      
 
 
       # 7. Upload the resolution output (package-lock.json + command output) and evidence files as one artifact. 
@@ -183,6 +203,7 @@ jobs:
             services/nodejs/package-lock.json
             services/nodejs/${{ inputs.cell_id }}_npm_log.txt
             services/nodejs/${{ inputs.cell_id }}_npm_setup_log.txt
+            services/nodejs/${{ inputs.cell_id }}_invalid.txt
           if-no-files-found: warn
           #changed from error to warn. because now some listed files (like the setup log for non-C1c cells) won't exist
           #choose "if-no-files-found: error" will fail the experiment cell (which does not involve C1c)
