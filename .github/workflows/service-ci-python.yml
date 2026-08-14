@@ -85,7 +85,7 @@ jobs:
           nexus_url = "http://host.docker.internal:8081"
 
           target = "services/python/pip.conf"
-          invalid_combi = "services/nodejs/${{ inputs.cell_id }}_invalid.txt"
+          invalid_combi = "services/python/${{ inputs.cell_id }}_invalid.txt"
 
           try:
             pipconf_content = generate_pipconf(A, B1, nexus_url)
@@ -102,7 +102,7 @@ jobs:
           except ValueError as e:
             with open(invalid_combi, "w") as file:
               file.write(f"A={A}, B1={B1} -> {e}")
-            print(f"step [generate_pip.conf] this combination is invalid: {e}")
+            print(f"step [generate_pip.conf] {e}")
           PY
 
       # 4. apply B2 (version specifier): pinned / (close) ranged / unspecified
