@@ -98,7 +98,8 @@ jobs:
       #      dependency:tree walks the transitive graph and downloads only POMs (small XML),
       # will not download the JARs -> fast, no build/install. Output:
       # - "${cell_id}_dependency-tree.json" -> structured tree (name + version, JSON since plugin 3.7.0)
-      # - "${cell_id}_mvn_log.txt"          -> "Downloading from <repoId>: <URL>" lines(repoId identifies the package resolution source)
+      # - "${cell_id}_mvn_log.txt" -> "Downloading from <repoId>: <URL>" lines
+      # - "${cell_id}_lockfile.json.txt" -> file for classification! very important. contains package's name, version, resolved URL
       - name: Apply CI pipeline operation (C1a - initial install) and run resolution command
         if: inputs.C1 == 'C1a'
         working-directory: services/java
@@ -121,9 +122,10 @@ jobs:
  
       # C1b (package update): 2-phase (setup + update)
       #   Phase 1 (setup, REAL resolve of pinned 1.0.0): swap pom.xml -> fixed_pom.xml (pinned <version>1.0.0</version>),
-      #           run dependency:tree -> populates ~/.m2 with 1.0.0 POMs (and metadata).
+      # run dependency:tree -> populates ~/.m2 with 1.0.0 POMs (and metadata).
       #   Phase 2 (update, resolve with cell's B2 specifier): restore cell pom.xml,
-      #           run dependency:tree with -U to force metadata re-check against remotes.
+      # run dependency:tree with -U to force metadata re-check against remotes.
+      # run maven-lockfile:generate again to generate lockfile after package update (used for result classification)
       - name: Apply CI pipeline operation (C1b - package update) and run update command
         if: inputs.C1 == 'C1b'
         working-directory: services/java
