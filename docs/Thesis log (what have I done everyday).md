@@ -1812,10 +1812,9 @@ pip install python-dotenv
 
 ## Next steps
 
-- [ ] Apply the missing `mv pom_cell.xml pom.xml` fix to `service-ci-java.yml`'s C1b step.
 - [ ] Continue manual pilot dispatches against the service pipelines to catch remaining logic errors before adding `--ephemeral`.
 - [ ] Phase 6: add `--ephemeral` to `entrypoint.sh`, rebuild the runner image, once pilot testing is done.
 - [ ] Phase 7: runner lifecycle functions (obtain registration token, start container, wait for online).
 - [ ] Phase 8: workflow dispatch + artifact download functions.
 - [ ] Phase 9: full orchestration loop + CLI (`--matrix` / `--run-all` / `--cell` / `--cells`).
-- [ ] build central automated pipeline
+- [ ] build central automated pipeline, run pilot test
