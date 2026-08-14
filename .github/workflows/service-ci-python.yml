@@ -161,7 +161,7 @@ jobs:
           mv pyproject.toml pyproject_cell.toml
           cp "${{ github.workspace }}/fixed_setup_file/fixed_pyproject.toml" pyproject.toml
 
-          pip install --target ./py_dependency --quiet \
+          pip install --target ./py_dependency \
           --report "${{ inputs.cell_id }}_setup-install-report.json" . \
           2>&1 | tee "${{ inputs.cell_id }}_pip_setup_log.txt" || true
 

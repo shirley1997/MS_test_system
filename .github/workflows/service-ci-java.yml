@@ -116,7 +116,8 @@ jobs:
             -DoutputType=json \
             2>&1 | tee "${{ inputs.cell_id }}_mvn_log.txt" || true
 
-          mvn -B io.github.chains-project:maven-lockfile:5.17.3:generate -DlockfileName="${{ inputs.cell_id }}_lockfile.json" -DincludeMavenPlugins=false
+          mvn -B io.github.chains-project:maven-lockfile:5.17.3:generate -DlockfileName="${{ inputs.cell_id }}_lockfile.json" -DincludeMavenPlugins=false \
+          2>&1 | tee "${{ inputs.cell_id }}_mvn_lockfile_log.txt" || true
 
           
  
