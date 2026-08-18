@@ -1818,3 +1818,8 @@ pip install python-dotenv
 - [ ] Phase 8: workflow dispatch + artifact download functions.
 - [ ] Phase 9: full orchestration loop + CLI (`--matrix` / `--run-all` / `--cell` / `--cells`).
 - [ ] build central automated pipeline, run pilot test
+
+
+### 18.08.2026 maven central (foundation)
+- important link to read: relationship between namespace and groupId: https://central.sonatype.org/faq/namespaces-vs-groupids/#groupid
+	- "Namespaces are prefixes of `groupId`s. If you are authorized to publish on the `com.example` namespace, you may publish a `groupId` of `com.example`, `com.example.child`, `com.example.child.subproject`"
