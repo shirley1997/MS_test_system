@@ -1819,6 +1819,93 @@ pip install python-dotenv
 - [ ] Phase 9: full orchestration loop + CLI (`--matrix` / `--run-all` / `--cell` / `--cells`).
 - [ ] build central automated pipeline, run pilot test
 
+# 14.08.2026: Pilot-tested and fixed bugs in all three service CI pipelines
+
+**Stand: Did the "continue manual pilot dispatches" step from the list above. Went through Node.js, Python, and Java pipelines one by one, found and fixed several real bugs (some pre-existing, one introduced by my own first-pass fix), and pilot-tested two things that turned out fine (didn't need a code change). Every fix below was confirmed by actually running a cell and checking the result, not just by reading the code. this is what caught most of the follow-up bugs.**
+
+## Java pipeline (`service-ci-java.yml`)
+
+### Bug 1: wrong Maven flag, lockfile.json never actually created
+- C1a and C1b called the `maven-lockfile:generate` plugin with `-DoutputFile=...` to name the output file. Checked the plugin's real source code on GitHub — the actual parameter is `-DlockfileName=...`. `-DoutputFile` isn't a real option, so Maven quietly ignored it and wrote to the default `lockfile.json` instead of `<cell_id>_lockfile.json` — meaning the artifact upload could never find it, and this file has the resolved-URL info the classifier actually needs (more useful than `dependency-tree.json`, which has no URL).
+- Fix: changed both calls to `-DlockfileName="${{ inputs.cell_id }}_lockfile.json"`.
+- My own first fix introduced a new bug: forgot the closing quote, so the line read `-DlockfileName="${{ inputs.cell_id }}_lockfile.json -DincludeMavenPlugins=false` (no `"` before the next flag). This is a bash syntax error ("unexpected EOF") — the command silently never ran at all (hidden by `continue-on-error: true`).
+- Fixed: added the missing `"`.
+- Pilot test: `A1a × B1a × B2a × C1a` → **Result: `<cell_id>_lockfile.json` generated correctly, with `resolved` and `repositoryId` filled in (`repositoryId: "central"`), confirming the `id=central` override approach still works with the lockfile plugin in the mix.**
+
+### Bug 2: `fixed_pom.xml` didn't work inside the runner container (2 separate problems)
+- `fixed_setup_file/fixed_pom.xml` (only used by C1b's setup phase) had `http://localhost:8081/...` hardcoded. Inside a Docker container, "localhost" means the container itself, not my Windows machine running Nexus. → `Connection refused`.
+- Fix: changed to `http://host.docker.internal:8081/...`.
+- Second problem, found right after fixing the first: the repository `<id>` in that same file was `nexus-group-public-first` — a name I made up that doesn't match anything in the runner's `settings.xml` HTTP-blocker exclusion list (`!central, !maven-group-public-first, ...`). So Maven's built-in "block all plain HTTP repos" rule still caught it → `Blocked mirror for repositories: [nexus-group-public-first ...]`.
+- Diagnosed using `mvn help:effective-settings` on my dev machine — turns out the same blocker mirror is present there too (nothing special is overriding it), but it never fires locally because my `.m2` cache already has everything cached from months of manual builds, so Maven never needs to actually reach out over the network. This is exactly why the bug only ever showed up on the runner (which purges its cache every cell) and never on my own machine.
+- Fix: changed `<id>` from `nexus-group-public-first` to `central` — matches what `generate_pom_xml.py` actually uses for A1a×B1a.
+- Pilot test: `A1a × B1a × B2b × C1b` → **Result: full 2-phase run succeeded, internal packages resolved to `1.0.3` (the public/attacker version) in phase 2 — expected, because `maven-group-public-first` merges versions from all its members, and the B2b range picks the highest one available.**
+
+### Design change (not a bug): purge the whole `/.m2` cache between cells
+- Changed the cleanup step from only deleting the internal packages' cache folder to deleting the entire `~/.m2/repository`. This makes pilot runs behave like the real experiment (fresh container per cell) and stops old cached artifacts from silently hiding real problems — this is actually *why* both bugs above only became visible now.
+- Trade-off: slower pilot runs, since Maven plugins and public dependencies re-download every single cell.
+
+### Small fix: no log for `lockfile:generate` failures, then reverted on purpose
+- The `lockfile:generate` calls in C1a/C1b had no `tee`/`|| true`, so a failure left zero trace in any uploaded file.
+- Fix: added `2>&1 | tee "${{ inputs.cell_id }}_mvn_lockfile_log.txt" || true` to both. Reused a filename that was already in the upload list (previously only ever produced by C1c) — no other changes needed.
+- Pilot test: reran an already-tested cell → **Result: `<cell_id>_mvn_lockfile_log.txt` showed up with real content.**
+- Later decided the log was too noisy to be useful for a quick manual check, so removed the `tee` again — **kept `|| true`** so a failure still can't break the step, just accepted that C1a/C1b won't have a diagnostic log if `lockfile:generate` fails.
+
+### Small fix: adjust outdated comment
+- Rewrote the C1a step's header comment, which only mentioned `dependency-tree.json`/`mvn_log.txt`, to also mention the `lockfile.json` output.
+
+## Node.js pipeline (`service-ci-nodejs.yml`)
+
+### Bug: crashes the whole job on the invalid A3×B1c combination
+- `generate_npmrc()` raises an error for A3×B1c (physically impossible: A3 has no proxy repo), but the workflow called it with no error handling → the whole step crashes → **no artifact gets uploaded at all** for that cell. Java already handled this properly (writes an `_invalid.txt` marker and continues); Node.js and Python didn't.
+- Fix: wrapped the call in `try/except`, writing an `_invalid.txt` marker file on error; added a skip-check at the top of C1a/C1b/C1c (`if [ -f "..._invalid.txt" ]; then exit 0; fi`); added the marker to the upload list.
+- First attempt had 3 bugs, all caught during review before testing:
+  1. A Python syntax error (`""services/nodejs/...` — a stray empty string glued onto unquoted text) that would have broken **every single cell**, not just the invalid one.
+  2. Used the wrong variable for the filename (`${{ inputs.C1 }}` instead of `${{ inputs.cell_id }}`).
+  3. In the error-handling block: opened the file `as file` but then called `f.write(...)` — `f` didn't exist (`NameError`); and the last `print(...)` was missing its closing quote (another syntax error).
+- Fixed all three.
+- Pilot test: `A1a×B1a×B2a×C1a` (checks normal cells still work) + `A3×B1c×B2c×C1a` (checks the invalid case) → **Result: both worked. Normal cells unaffected; invalid cell now writes `_invalid.txt`, gets skipped cleanly, no crash.**
+
+## Python pipeline (`service-ci-python.yml`)
+
+### Bug 1: same invalid-combination crash as Node.js, plus a copy-paste mistake
+- Applied the same fix pattern as Node.js (try/except, `_invalid.txt` marker, skip-checks, upload list entry).
+- Bug found: the marker was being written to `services/nodejs/${{ inputs.cell_id }}_invalid.txt` — wrong service folder, a leftover from using the npm fix as my reference while writing this one. The write itself didn't fail (that folder exists too), so nothing errored — the file was just landing in the wrong place, which looked exactly like "it's not being generated" from where I was checking.
+- Fix: corrected the path to `services/python/...`.
+- Pilot test: `A3×B1c×B2a×C1a` → **Result: marker now appears in the right place, gate catches it, run finishes cleanly.**
+
+### Checked, but decided NOT to change: `PIP_CONFIG_FILE` set to an empty string for B1d
+- Worry: B1d means "no config file at all," and the workflow expresses that as `PIP_CONFIG_FILE: ''`. pip's own docs say the *documented* way to disable config loading is `os.devnull`, not an empty string — so I wasn't sure if `''` actually behaves the same.
+- Instead of guessing, pilot-tested it directly:
+  - `A1a×B1d×B2a×C1a` (pinned to `1.0.0`, which only exists on my private Nexus, never published publicly) → **Result: correctly FAILED — pip said the only version it could see was `1.0.3` (the public one). Proves it never saw Nexus at all.**
+  - `A1a×B1d×B2b×C1a` (a version range) → **Result: correctly resolved to the public `1.0.3` from `files.pythonhosted.org`, with zero Nexus URLs anywhere in the output.**
+- Conclusion: pip treats an empty `PIP_CONFIG_FILE` the same as "no config" in real life, even though it's not the officially documented value. **No code change needed.**
+
+### Checked, but decided NOT to change: missing `PYTHONPATH` in C1b's "package update" phase
+- My design notes from 15.07.2026 said C1b's phase 2 (the "upgrade" step) needs `PYTHONPATH=./py_dependency` so pip can see the package version installed in phase 1 — this was never actually implemented or tested.
+- Pilot-tested instead of guessing:
+  - `A1a×B1a×B2b×C1a` (plain, single-phase resolve) → **Result: resolved to `1.0.3`.**
+  - `A1a×B1a×B2b×C1b` (2-phase: install `1.0.0` baseline, then "upgrade") → **Result: also resolved to `1.0.3` — identical.**
+- Conclusion: `PYTHONPATH` doesn't change the actual result here, because `--upgrade` combined with the project's own version-range requirement already pushes pip toward "highest version in range" regardless of what's already installed. **No code change needed.** Side note for later: this means C1b's Python "update" phase might not really be testing a different scenario than a plain resolve — worth a sentence in the methodology chapter someday, not urgent.
+- While testing this, also noticed phase 1's setup log (`_pip_setup_log.txt`) was coming back completely empty — turned out the `pip install` command there uses `--quiet`, which suppresses all the normal progress text. Removed `--quiet` so the log actually shows what got installed.
+
+## Other things fixed along the way (not pipeline bugs)
+- Hit a workflow stuck in "Queued" for several minutes — turned out the runner container had reconnected to GitHub right when the job was dispatched, so the job never got delivered to the runner's new session. Not a pipeline bug — just cancelled the stuck run and re-dispatched once the runner showed idle again (checked with `docker ps` + `gh run list`).
+- Found where the repo actually lives inside the runner container, for browsing files directly in Docker Desktop: `/home/runner/_work/MS_test_system/MS_test_system/` (found with `docker exec ... find ... -iname "_work"`).
+
+## Commands used today
+
+```bash
+
+# Compare dev-machine Maven settings against the runner's (HTTP-blocker investigation)
+mvn help:effective-settings
+
+```
+
+## Next steps
+- [ ] All bugs found during this pilot-testing pass are fixed and re-verified. Ready to continue the "continue manual pilot dispatches" step with any remaining untested cells, then move on to Phase 6 (`--ephemeral`) from the earlier next-steps list.
+- [ ] Optional: re-run one Java C1c cell to double check the earlier 09.08.2026-verified behavior still holds after today's `fixed_pom.xml` fixes and the full `/.m2` purge change (shouldn't be affected, but cheap to confirm).
+- [ ] The central automated pipeline (`central_automated_pipeline.py`) and the config generator scripts haven't had this same close, pilot-tested review yet — only the three service CI YAMLs were covered today.
+
 
 ### 18.08.2026 maven central (foundation)
 - important link to read: relationship between namespace and groupId: https://central.sonatype.org/faq/namespaces-vs-groupids/#groupid
