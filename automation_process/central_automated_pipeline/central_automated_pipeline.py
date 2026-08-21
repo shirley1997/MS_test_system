@@ -14,6 +14,7 @@ import subprocess
 import requests
 import dotenv    # need this to read .env file (for nexus authentication)
 import os
+import time
 
 
 A = ["A1a", "A1b", "A2", "A3"]     # nexus repository
@@ -256,6 +257,64 @@ def invalidate_nexus_cache(ecosystem, cell_A_option):
         if group_invalidate_response.status_code != 204:
             print(f"group repo cache invalidation did not succeed. code {group_invalidate_response.status_code} for {group_repo[ecosystem][cell_A_option]}")
         print(f"cache of {proxy_repo[ecosystem]} and {group_repo[ecosystem][cell_A_option]} discarded")
+
+# phase 7: set up connection between central automated pipeline and github actions runner
+# use gh api to get registration token, which is needed for connect a runner with github
+# then start the runner, put the obtained token as a parameter in the start command
+def get_registration_token(owner, repo) -> str:
+   token = subprocess.run(["gh", "api", 
+                           "--method", "POST", "-H", 
+                           "Accept: application/vnd.github+json",
+                           "-H", 'X-GitHub-Api-Version: 2026-03-10', 
+                           f"repos/{owner}/{repo}/actions/runners/registration-token",
+                           "--jq", ".token"],
+                        check=True,
+                        capture_output=True,
+                        text=True,).stdout.strip()
+   return token
+
+def start_runner_container (cell_id, token, repo_url, image_tag) -> str:
+    start_runner = subprocess.run(
+    [
+        "docker", "run", "-d", "--rm",
+        "--name", f"thesis-runner-{cell_id}",
+        "-e", f"GH_REPO_URL={repo_url}",
+        "-e", f"GH_TOKEN={token}",
+        "-e", "RUNNER_LABELS=thesis-runner",
+        image_tag,
+    ],
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.strip()
+    return start_runner
+
+
+def wait_for_runner_online(owner, repo, timeout_s=60, check_interval_s=5) -> bool:
+    elapsed = 0
+    while elapsed <= timeout_s:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{owner}/{repo}/actions/runners"],
+            capture_output=True,
+            text=True,
+        )
+        runners_data = json.loads(result.stdout)   # same json.loads(result.stdout) pattern you'll use elsewhere
+
+        for runner in runners_data["runners"]:
+            runner_labels = runner["labels"]        # a list of dicts, e.g. [{"name": "thesis-runner", ...}]
+            for label in runner_labels:
+                if label["name"] == "thesis-runner" and runner["status"] == "online":
+                    return True
+
+        time.sleep(check_interval_s)
+        elapsed += check_interval_s
+
+    return False
+
+
+
+
+
 
 
 

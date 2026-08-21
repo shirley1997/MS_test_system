@@ -72,7 +72,8 @@ else
         --name "${RUNNER_NAME}" \
         --labels "${RUNNER_LABELS}" \
         --replace \
-        --disableupdate
+        --disableupdate \
+        --ephemeral
 fi
 
 

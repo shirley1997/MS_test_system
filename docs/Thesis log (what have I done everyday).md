@@ -1805,6 +1805,13 @@ pip install python-dotenv
 - [GitHub Docs — self-hosted runner software updates](https://docs.github.com/en/actions/reference/runners/self-hosted-runners#runner-software-updates-on-self-hosted-runners): explains the `--disableupdate` flag on `config.sh`, used to stop GitHub silently auto-updating the runner binary (already applied in `entrypoint.sh` on 08.08.2026, this is just the source doc for it).
 - [Sonatype REST API reference](https://help.sonatype.com/en/api-reference.html): confirms the actual cache-invalidation endpoint is `POST /v1/repositories/{repositoryName}/invalidate-cache` servers: /service/rest
 - [GitHub REST API — self-hosted runners](https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2026-03-10): how to automatically obtain a runner registration token via the API instead of the GitHub UI. needed so the central pipeline can register a fresh ephemeral runner per cell without manual steps.
+  - GitHub CLI api
+  - https://cli.github.com/manual/gh_api
+  - gh api \
+  --method POST \
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2026-03-10" \
+  /repos/OWNER/REPO/actions/runners/registration-token
 - [`gh workflow run` manual](https://cli.github.com/manual/gh_workflow_run):  run a workflow file using github CLI. how to trigger a `workflow_dispatch` workflow with inputs from the command line.
 - [`gh run watch` manual](https://cli.github.com/manual/gh_run_watch): watches a workflow run until it finishes, showing progress. used to block the central pipeline until a cell's CI run completes before downloading its artifact.
 - [`argparse` examples](https://stackoverflow.com/questions/7427101/simple-argparse-example-wanted-1-argument-3-results) and [official Python `argparse` HOWTO](https://docs.python.org/3/howto/argparse.html): for building the pipeline's command-line interface (run the whole matrix / one cell / a subset of cells). the subset option is specifically needed for sub-RQ2, to rerun only the cells that came out `malicious_resolved`.
