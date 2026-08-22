@@ -224,7 +224,11 @@ def read_java_evidence(java_cell, base_dir) -> list[dict]:
     return mvn_package_found
     
 # package_evidence is the list[dict] (or None) which is the return value from the 3 functions above
-# the classification logic need to be checked again
+def is_from_nexus(url) -> bool:
+    if url == None:
+        return False
+    return "8081" in url   # Nexus's fixed port, regardless of whether the host is localhost or host.docker.internal
+
 
 def classify_logic(ecosystem, package_evidence) -> str:
     
@@ -237,7 +241,7 @@ def classify_logic(ecosystem, package_evidence) -> str:
     expected_count = len(internal_packages[ecosystem])
     count_in_evidence = 0
     for evidence in package_evidence:
-        if evidence["version"] in internal_version:
+        if evidence["version"] in internal_version and is_from_nexus(evidence["url"]):
             count_in_evidence += 1
     if count_in_evidence == expected_count:
             return "private_resolved"
@@ -521,8 +525,6 @@ def experiment_loop(matrix_rows, owner, repo, repo_url, image_tag, checkpoint_pa
 
 
 
-
-
 if __name__ == "__main__":
 
 
@@ -608,8 +610,23 @@ if __name__ == "__main__":
     checkpoint_path = Path("automation_process/central_automated_pipeline/checkpoint.json")
     result_file_path = Path("automation_process/central_automated_pipeline/results.csv")
 
-    matrix_rows = generate_matrix()
-    write_matrix_csv(matrix_rows, "automation_process/central_automated_pipeline/experiment_matrix.csv")
+    target_cell_ids = [
+    "pip_A1a_B1a_B2a_C1a",   # python sanity check — read_pip_evidence never run for real yet
+    "mvn_A1a_B1a_B2a_C1a",   # java sanity check — read_java_evidence never run for real yet
+    "mvn_A3_B1a_B2b_C1c",    # expected malicious_resolved (confirmed on 09.08 pilot — leaks to real Maven Central)
+    "mvn_A2_B1a_B2a_C1c",    # the flagged untested edge case from Phase 4 (public deps can't resolve)
+    "npm_A3_B1c_B2a_C1a",    # invalid combo — should short-circuit, no infra touched
+    ]
 
-    test_cells = matrix_rows[:3]   # only test 3 cells for now, not the full 432 
+    all_matrix_rows = generate_matrix()
+    test_cells = [cell for cell in all_matrix_rows if cell["cell_id"] in target_cell_ids]
+
     experiment_loop(test_cells, owner, repo, repo_url, image_tag, checkpoint_path, result_file_path)
+
+
+
+    # matrix_rows = generate_matrix()
+    # write_matrix_csv(matrix_rows, "automation_process/central_automated_pipeline/experiment_matrix.csv")
+
+    # test_cells = matrix_rows[:3]   # only test 3 cells for now, not the full 432 
+    # experiment_loop(test_cells, owner, repo, repo_url, image_tag, checkpoint_path, result_file_path)

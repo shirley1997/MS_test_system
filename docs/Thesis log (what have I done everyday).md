@@ -1738,19 +1738,20 @@ mvn help:effective-pom -f pom-test.xml "-Doutput=effective-pom.xml"
 
 ## 1. Determined the technical requirements for the central automated pipeline
 
-- Went through my requirements: generate the full experiment matrix as CSV, mark invalid cells without dispatching them, support running the whole matrix / one cell / a subset (needed later for sub-RQ2, to rerun only the vulnerable cells), a checkpoint file so an interrupted run can resume, centralized classification (not inside the service pipelines), and cache isolation between cells (Nexus + runner).
-- Used section 5.3 of the thesis (the original, implementation-light pipeline design) plus the 30.06.2026 dev-log design as the starting point, then refined it together based on my review.
-- Confirmed section 6.5 ("Central Automation Pipeline") in the thesis draft is still just an empty heading — nothing to reconcile against, 5.3 stays the authoritative source.
+- Went through my requirements: generate the full experiment matrix as CSV, mark invalid cells first and they don't go further steps, support running the whole matrix / one cell / a subset (needed later for sub-RQ2, to rerun only the vulnerable cells), a checkpoint file so an interrupted run can resume, centralized classification (not inside the service pipelines), and cache isolation between cells (Nexus cache invalidation + runner container destruction).
+- Used section 5.3 (methodology) of the thesis (the original, implementation-light pipeline design) plus the 30.06.2026 dev-log design as the starting point, then refined it together based on my review.
+
 
 ## 2. Key design decisions made today
 
-- **Checkpoint file**: `.checkpoint.json`, a plain JSON array of finished `cell_id`s (no per-cell status). A cell counts as done just by being in the file — matches the fact that every cell only ever gets one attempt.
-- **Single script file**, not several modules: `automation_process/central_automated_pipeline/central_automated_pipeline.py`. All phases are functions in one file, so shared setup (Nexus URL, repo owner/name, constants) only has to be written once.
-- **`cell_id` format**: `{ecosystem_short}_{A}_{B1}_{B2}_{C1}`, e.g. `npm_A1a_B1a_B2a_C1a` — self-describing, stable across re-generating the matrix.
-- **`results.csv` is the single source of truth** — every one of the 432 cells gets a row, valid or invalid, so I never have to cross-reference two files. Invalid cells' rows get appended once, after the whole run finishes, from `experiment_matrix.csv`'s invalid rows, so it doesn't slow down or risk the real run.
-- **Classification categories stay exactly `malicious_resolved` / `private_resolved` / `resolution_error` / `invalid_configuration`** — no extra "packages disagree" category. Reasoning: if even one of the two internal packages resolves to the attacker's version, that's already a successful attack on that cell, regardless of what the other package did — checked with priority, before anything else.
-- **Nexus cache invalidation**: corrected from an earlier assumption — the real Sonatype API uses **POST**, not DELETE, and I also need to invalidate the **group repo's own cache** (not just the underlying proxy) for `A1a`/`A1b` cells, since group repos have their own metadata-merge cache layer on top of their members'.
-- **Ephemeral runner (`--ephemeral`) postponed on purpose** — decided to keep the current persistent-registration runner for now, since I still want to do several manual pilot dispatches against the service pipelines to catch logic errors, and ephemeral mode would mean a fresh container + token per single manual test, which is slower to iterate with. Will switch to `--ephemeral` once pilot testing is done and I move to the automated dispatch-loop phases.
+- **Checkpoint file**: `checkpoint.json`, a plain JSON array of finished `cell_id`s (no per-cell status). A cell counts as done just by being in the file, matches the fact that every cell only ever gets one attempt.
+- **Single script file**:`automation_process/central_automated_pipeline/central_automated_pipeline.py`. All phases are functions in one file, so shared setup and variables (Nexus URL, repo owner/name, constants, file paths) only has to be written once.
+- **`cell_id` format**: `{ecosystem_short}_{A}_{B1}_{B2}_{C1}`, e.g. `npm_A1a_B1a_B2a_C1a` — descriptive, stable across re-generating the matrix.
+- **`results.csv` is the single source of truth** — every one of the 432 cells gets a row, valid or invalid, no cross-reference two files. Invalid cells' rows get appended once, AFTER the whole experiment finishes, from `experiment_matrix.csv`'s invalid rows.
+- **Classification categories stay exactly `malicious_resolved` / `private_resolved` / `resolution_error` / `invalid_configuration`** — if even one of the two internal packages resolves to the attacker's version, that's already a successful attack on that cell, regardless of what the other package did , check that status with priority, before anything else.
+- **Nexus cache invalidation**: the real Sonatype API uses **POST**, and I also need to invalidate the **group repo's own cache** (not just the proxy repo) for `A1a`/`A1b` cells, since group repos have their own metadata-merge cache layer on top of their members'.
+- **Ephemeral runner (`--ephemeral`)** in entrypoint.sh
+- **Classification never needs `repositoryId`** — only package name (artifact ID), resolved version, and resolved URL are recorded or used for classification. Confirmed via `maven_lockfile_example.json`: for my two internal packages, `repositoryId` came back as `"central"` (not `"maven-internal-hosted"`) — a side effect of the `id=central` override design in `generate_pom_xml.py` — proving the field isn't a reliable source indicator on its own.
 
 ## 3. Implemented Phase 1 - 5 of `central_automated_pipeline.py`
 
@@ -1758,7 +1759,7 @@ mvn help:effective-pom -f pom-test.xml "-Doutput=effective-pom.xml"
 - **Phase 2 (checkpoint)**: `load_finished_cells()`, `mark_cell_as_finish()`, `is_finished()`. Verified by marking two fake cell_ids finished and checking `is_finished()` returns `True`/`True`/`False` correctly.
 - **Phase 3 (results.csv writer)**: `write_result_file()`, appends one row per cell using placeholder test data.
 - **Phase 4 (classification)**: `read_npm_evidence()`, `read_pip_evidence()`, `read_java_evidence()`, `classify_logic()`. Verified against hand-built fake evidence lists (None / private / malicious / partial-count / unrecognized-version), and against two real sample files already in the repo (`services/python/test-install-report3.json`, `maven_lockfile_example.json`).
-- **Phase 5 (Nexus cache invalidation)**: `invalidate_nexus_cache()`. Tested against the real local Nexus instance.
+- **Phase 5 (Nexus cache invalidation)**: `invalidate_nexus_cache()`. Tested against the real local Nexus repositories.
 
 ## 4. Bugs found and fixed while implementing (implement and test one function/phase at a time)
 
@@ -1785,7 +1786,7 @@ mvn help:effective-pom -f pom-test.xml "-Doutput=effective-pom.xml"
 ## 6. Nexus authentication
 
 - Assumed anonymous access might cover cache invalidation (per the 10.07.2026 finding that anonymous *read* was enabled) — turned out to be wrong. Got `403 Forbidden` on both the proxy and group repo invalidation calls.
-- Added `python-dotenv`, created a gitignored `.env` file at the repo root with `NEXUS_ADMIN_USER`/`NEXUS_ADMIN_PASS`, loaded via `load_dotenv()`, and passed `auth=(user, pass)` into the `requests.post()` calls.
+- Added `python-dotenv`, created a gitignored `.env` file at the repo root with `NEXUS_ADMIN_USER`/`NEXUS_ADMIN_PASS`, loaded via `load_dotenv()`, and passed `auth=(user, pass)` into the `requests.post()` calls (POST request to nexus).
 
 ## Commands used today
 
@@ -1804,16 +1805,15 @@ pip install python-dotenv
 
 - [GitHub Docs — self-hosted runner software updates](https://docs.github.com/en/actions/reference/runners/self-hosted-runners#runner-software-updates-on-self-hosted-runners): explains the `--disableupdate` flag on `config.sh`, used to stop GitHub silently auto-updating the runner binary (already applied in `entrypoint.sh` on 08.08.2026, this is just the source doc for it).
 - [Sonatype REST API reference](https://help.sonatype.com/en/api-reference.html): confirms the actual cache-invalidation endpoint is `POST /v1/repositories/{repositoryName}/invalidate-cache` servers: /service/rest
-- [GitHub REST API — self-hosted runners](https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2026-03-10): how to automatically obtain a runner registration token via the API instead of the GitHub UI. needed so the central pipeline can register a fresh ephemeral runner per cell without manual steps.
-  - GitHub CLI api
-  - https://cli.github.com/manual/gh_api
+- [GitHub REST API — self-hosted runners](https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2026-03-10): how to automatically obtain a runner registration token for a repository via the github API. needed so the central pipeline can register a fresh ephemeral runner per cell without manual steps.
   - gh api \
   --method POST \
   -H "Accept: application/vnd.github+json" \
   -H "X-GitHub-Api-Version: 2026-03-10" \
   /repos/OWNER/REPO/actions/runners/registration-token
-- [`gh workflow run` manual](https://cli.github.com/manual/gh_workflow_run):  run a workflow file using github CLI. how to trigger a `workflow_dispatch` workflow with inputs from the command line.
-- [`gh run watch` manual](https://cli.github.com/manual/gh_run_watch): watches a workflow run until it finishes, showing progress. used to block the central pipeline until a cell's CI run completes before downloading its artifact.
+- [`gh workflow run` manual](https://cli.github.com/manual/gh_workflow_run):  run a workflow file using github CLI. how to trigger a `workflow_dispatch` workflow with inputs from the command line. Inputs can be given interactively, via `-f`/`-F` (raw-field/field flags — this is what the pipeline uses), or as JSON via stdin.
+- [`gh run list` manual](https://cli.github.com/manual/gh_run_list): list recent workflow runs. `--limit <int>` (default 20) caps how many are fetched — used right after dispatching a cell to find that workflow's run ID of the corresponding cell.
+- [`gh run watch` manual](https://cli.github.com/manual/gh_run_watch): watches a workflow log run until it finishes, showing progress. used to block the central pipeline until a cell's CI run completes before downloading its artifact.
 - [`argparse` examples](https://stackoverflow.com/questions/7427101/simple-argparse-example-wanted-1-argument-3-results) and [official Python `argparse` HOWTO](https://docs.python.org/3/howto/argparse.html): for building the pipeline's command-line interface (run the whole matrix / one cell / a subset of cells). the subset option is specifically needed for sub-RQ2, to rerun only the cells that came out `malicious_resolved`.
 - [Git Tower — `git rev-parse` FAQ](https://www.git-tower.com/learn/git/faq/git-rev-parse): Git Rev-Parse: `git rev-parse` is a command that takes a Git reference (like a branch name, tag, or commit hash) as input and outputs the corresponding object ID. In simpler terms, it translates human-readable Git references into their internal object representations. this command is used to record which exact commit produced each row in `results.csv`. (a unique reference)
 
@@ -1914,6 +1914,93 @@ mvn help:effective-settings
 - [ ] The central automated pipeline (`central_automated_pipeline.py`) and the config generator scripts haven't had this same close, pilot-tested review yet — only the three service CI YAMLs were covered today.
 
 
-### 18.08.2026 maven central (foundation)
+# 18.08.2026 maven central (for foundation chapter)
 - important link to read: relationship between namespace and groupId: https://central.sonatype.org/faq/namespaces-vs-groupids/#groupid
 	- "Namespaces are prefixes of `groupId`s. If you are authorized to publish on the `com.example` namespace, you may publish a `groupId` of `com.example`, `com.example.child`, `com.example.child.subproject`"
+
+# 21 & 22.08.2026 central automated pipeline: Phase 6-9 implementation, pilot testing, fix bugs
+
+**Stand: Implemented and pilot-tested Phase 6 through 9 of `central_automated_pipeline.py`: ephemeral runner infrastructure, runner lifecycle functions, workflow dispatch/artifact download, and the full per-cell orchestration + main loop. Ran 3 real npm cells end-to-end (results show private_resolved). Adjusted the classification logic to also check the resolved URL, not just version, which is described in my methodology chapter. Found one real infrastructure finding (Nexus metadata caching) and one real correctness gap (Ctrl+C doesn't safely stop the pipeline), the second one is still open, planned for next session.**
+
+## 1. Phase 6 — ephemeral runner
+
+- One-line edit to `infrastructure/runner/entrypoint.sh`: added `--ephemeral` to the `config.sh` call.
+- **Bug**: forgot to add `\`  after `--disableupdate`, so `--ephemeral` landed on its own line and got interpreted as its own (nonexistent) shell command: `entrypoint.sh: line 76: --ephemeral: command not found`. Fixed by adding the missing `\`.
+- Rebuilt the image (`docker build -t thesis-runner:2.335.1 infrastructure/runner/`), manually verified: container registers, picks up a dispatched workflow, then **both** the GitHub-side registration and the container disappear on their own afterward.
+- Confirmed (by testing `docker start` on a stopped ephemeral container): `--ephemeral` also deletes the local `.credentials`/`.runner` files as part of its self-cleanup — so restarting a stopped ephemeral container isn't a real workflow, only fresh `docker run --rm` + a fresh token is. Matches the pipeline's actual design (always fresh containers), so not a problem, just noted for my own understanding.
+- Cleaned up 6 old "offline" runner registrations left over from earlier persistent-mode testing, via https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2026-03-10#delete-a-self-hosted-runner-from-an-organization:
+  ```powershell
+  gh api --method DELETE -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2026-03-10" repos/shirley1997/MS_test_system/actions/runners/RUNNER_ID
+  ```
+
+## 2. Phase 7 — runner lifecycle functions (`get_registration_token`, `start_runner_container`, `wait_for_runner_online`)
+
+
+- **Bug in both `get_registration_token` and `start_runner_container`**: returned the raw `CompletedProcess` object instead of `.stdout.strip()` — despite the `-> str` type hint, neither function actually returned a string.
+- **Design correction to `wait_for_runner_online`**: Redesigned to match by a unique **runner name** instead: added `-e RUNNER_NAME=thesis-runner-{cell_id}` to `start_runner_container`, and `wait_for_runner_online` now takes an `expected_runner_name` parameter and checks `runner["name"] == expected_runner_name`.
+- **Bug during that fix**: first attempt wrote `"-e", f"thesis-runner-{cell_id}"` — missing the `RUNNER_NAME=` prefix, so it wasn't a valid env-var assignment at all. `RUNNER_NAME` stayed unset, the runner registered under a random container-ID name instead, and `wait_for_runner_online` correctly returned `False` (looked like a timing bug, wasn't). Fixed to `"-e", f"RUNNER_NAME=thesis-runner-{cell_id}"`.
+- **Verified end-to-end** via test script `test_phase7.py`: obtained token → started container → `wait_for_runner_online` returned `True`, correctly matching by runner name → manually dispatched `hello-world`workflow → confirmed both the container and the GitHub runner registration disappeared.
+
+## 3. Phase 8 — dispatch & artifact download (`dispatch_cell`, `find_run_id`, `wait_for_run_complete`, `download_artifact`)
+
+- **f-string syntax error** `f"cell_id={cell}["cell_id"]"`Fixed by doing the dict lookup *inside* the braces with the opposite quote style: `f"cell_id={cell['cell_id']}"`.
+- **Bug in `find_run_id`**: `gh run list --json ...` returns a JSON **array**, but the code indexed it like a dict (`workflow_data["databaseId"]`), fixed to `workflow_data[0]["databaseId"]` (most recent run, since `gh run list` returns newest-first).
+- **Three bugs in `download_artifact`**: `str(run_id)` was mistakenly written into the function's own *parameter list* (not valid — parameters must be plain names, not function calls); `return dest_dir` was indented to the same level as `try:` itself instead of inside it, breaking the `try`/`except` pairing; and a missing `str(run_id)` conversion at the actual call site (same reasoning as `find_run_id`'s int-vs-str return type — `databaseId` is a JSON number, not a string, despite the `-> str` hint).
+- **Design change to `wait_for_run_complete`**: removed `capture_output=True` so its `--compact` progress actually streams to the terminal live instead of being silently captured and thrown away, and added explicit `print()`s after so there's always a clear "finished waiting" marker.
+- **Verified end-to-end** via `test_phase7_8.py`, chaining Phase 7 straight into Phase 8 for a real `npm_A1a_B1a_B2a_C1a` cell, artifact downloaded successfully.
+- **Important empirical correction**: originally assumed a downloaded artifact preserves the `services/{ecosystem}/` folder prefix from the workflow's `upload-artifact` step. Wrong — `actions/upload-artifact` strips the common leading directory shared by every listed path, so since every workflow's upload list lives entirely under `services/{ecosystem}/...`, that whole prefix gets flattened away. Downloaded files sit directly at the top level (e.g. `{cell_id}_lockfile.json`, `package-lock.json`), confirmed by inspecting a real downloaded Java cell's folder. Corrected all Phase 9 evidence-file paths accordingly.
+
+## 4. Phase 9 — full orchestration (`run_one_cell`, `build_result_row`, `copy_invalid_rows`, `experiment_loop`)
+
+- **`classification` never actually captured**: `classify_logic(...)`'s return value was discarded at the call site; and inside `build_result_row`, the dict literal called `classify_logic()` a *second* time with **zero** arguments instead of using the `classification` parameter the function already receives. Fixed both.
+
+- **`build_result_row` ignored its own `git_commit` parameter** — the dict literal called `get_git_commit()` fresh internally instead of using the value the caller already computed and passed in. Wasteful (ran `git rev-parse HEAD` twice) and made the parameter dead. Fixed to use the parameter.
+- **`read_java_evidence` needed a `base_dir` parameter added** : it previously opened a bare filename assuming the script's own working directory, which doesn't work once the file actually lives inside a downloaded artifact folder.
+
+- **Design decision — new classification category `runner_offline_error`**: added as a 5th category (distinct from `resolution_error`) specifically for cells where `wait_for_runner_online` times out — deliberately kept separate to distinguish "infrastructure failed before the experiment could even run" from "the experiment ran and produced an ambiguous/failed resolution." Considered folding it into `resolution_error` for simplicity, decided against it for clearer results reporting.
+
+## 5. Classification logic adjustment — added URL as real evidence, not just recorded data
+
+- My methodology says classification should be based on package name, version, **and** URL together (that's the whole reason I use the lockfile as evidence in the first place — otherwise the resolved URL is invisible). The original `classify_logic` only ever checked `version`.
+- Added `is_from_nexus(url)`: checks whether `"8081"` (Nexus's fixed port) appears in the URL — deliberately hostname-agnostic (works for both `localhost:8081` and `host.docker.internal:8081`).
+- **`private_resolved` now requires both** `version in internal_version` **and** `is_from_nexus(url)`.
+- **`malicious_resolved` deliberately stays version-only, on purpose** — requiring `is_from_nexus` there would be wrong: a malicious package can arrive either via Nexus's proxy (still shows `8081`) *or* by leaking straight from the real public registry, completely bypassing Nexus (no `8081` at all) — I already have a real, confirmed example of the second case, the `A3×B1a×B2b×C1c` pilot cell from 09.08.2026 that resolved `1.0.3` directly from `repo.maven.apache.org`. Requiring Nexus-origin for `malicious_resolved` would have wrongly excluded that already-confirmed attack success.
+- Considered (and explicitly dropped) a same-version experiment idea (internal package and malicious package both published as e.g. `1.0.2`) — decided against it, since it doesn't match the canonical dependency-confusion definition (Birsan 2021: attacker wins via a *higher* version number under default resolution, not a same-version race).
+
+## 6. Real infrastructure quirk found: Nexus caches computed npm metadata, not just files
+
+- Noticed one internal package's resolved URL showed `localhost:8081` while everything else showed `host.docker.internal:8081`, despite all cells using the same `.npmrc`/`NEXUS_URL` config generated the same way.
+- Likely explanation: npm registry metadata (including the `dist.tarball` URL) is normally computed dynamically per-request based on the request's `Host` header — if Nexus caches that *computed* response rather than recomputing it every time, whichever host first triggered that specific package@version's metadata (e.g. my own manual `localhost:8081` testing back in June/July, before the Docker runner pipeline existed) stays baked into the cached response indefinitely. `npm-internal-hosted` is deliberately excluded from my Phase 5 cache-invalidation calls (it's permanent storage, not a proxy cache), so this particular cache was never touched.
+- Not a real problem: `classify_logic` never used `url` at all before this session, and the new `is_from_nexus` check only looks for the port number `"8081"`, which both hostnames satisfy — so this quirk can't cause a misclassification. Recorded here for methodology transparency, not something I fixed.
+
+## 7. Pilot tests run for real (first live cells through the whole pipeline)
+
+- Ran 3 real npm cells, same `A1a×B1a×B2a`, varying only `C1` (`C1a`/`C1b`/`C1c`) — all three completed successfully and classified `private_resolved`.
+- Example real output from one run:
+  ```
+  cache of npm-public-proxy discarded
+  cache of npm-public-proxy and npm-group-public-first discarded
+  registration token obtained: AEG5DSRJIRYKDGUAIVDNTM3KRHJRO
+  runner container just created: 36fddaad208f8e9747b4c117756bcb7106e0fd88a71ff8b531de17a78721555c
+  is the new created runner online now?: True
+  dispatching cell: npm_A1a_B1a_B2a_C1a
+  run_id of the workflow: 32582870556
+  ✓ Run Service CI - Node.js (32582870556) completed with 'success'
+  pipeline run 32582870556 finished
+  download artifact produced by service pipeline: automation_process/central_automated_pipeline/artifact_download/npm_A1a_B1a_B2a_C1a
+  ```
+- Confirmed `checkpoint.json` and `results.csv` both filled in correctly after each cell, and the runner container + GitHub registration cleaned themselves up automatically each time.
+
+## 8. Found (not yet fixed): Ctrl+C doesn't safely stop the pipeline
+
+- Tested crash-recovery by pressing Ctrl+C mid-run, during the "observing workflow" step (`wait_for_run_complete`). Expected the in-progress cell to be absent from `checkpoint.json` afterward — it wasn't; the cell was still marked done.
+- **Root cause**: on Windows, Ctrl+C is delivered to the whole console process group, including the `gh` subprocess `wait_for_run_complete` is blocking on. `gh run watch` exits/aborts quickly on the signal, and since that call uses `check=False`, `subprocess.run()` just returns normally — no exception raised. The Python script then keeps running (download → classify → write → mark done) and races to completion within a second or two, which looks like "I pressed Ctrl+C and it stopped" but actually means the interrupt only killed the `gh` subprocess, not the pipeline itself.
+- **Fix designed, not yet applied**: register a custom `SIGINT` handler that sets a `stop_requested` flag immediately, then explicitly check that flag right after the two genuinely long-running waits (`wait_for_runner_online`, `wait_for_run_complete`) inside `run_one_cell`, bailing out *before* `mark_cell_as_finish` if it's set; also check it at the top of each `experiment_loop` iteration so no *new* cell starts after a stop is requested.
+- Known limitation even with the fix: the runner container for a mid-way-interrupted cell may be left orphaned (Ctrl+C stops the next Python steps, not an already-started `docker run -d`) — matches my own original Phase 6 decision not to build automatic container teardown; `docker ps -a` + manual `docker rm` covers it.
+
+## Next steps
+
+- [ ] Implement the Ctrl+C / graceful-stop fix designed above (signal handler + `stop_requested` checks).
+- [ ] Run the still-missing pilot coverage: one Python cell and one Java cell through the real pipeline (never tested for real yet, only via hand-fed fixtures), a cell expected to produce `malicious_resolved`, the flagged untested `A2×B1a×C1c` Maven edge case from Phase 4, one invalid cell + confirm `copy_invalid_rows` writes its row correctly, and a real crash-recovery test using the fixed Ctrl+C handling.
+- [ ] Only after all of the above passes: a small (~dozen-cell) pilot subset spanning all three ecosystems, then the full 432-cell official run.
+- [ ] CLI (`--matrix` / `--run-all` / `--cell` / `--cells`) still not built — deliberately deferred this session to focus on getting `run_one_cell`/`experiment_loop` correct first.
