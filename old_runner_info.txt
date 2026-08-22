@@ -1,0 +1,202 @@
+// output for gh api -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2026-03-10" repos/shirley1997/MS_test_system/actions/runners
+// this output is observed and used for method wait_for_runner_online() in central_automated_pipeline phase 7
+// so that the runner's status (online / offline) can be returned through that method
+
+{
+  "total_count": 6,
+  "runners": [
+    {
+      "id": 28,
+      "name": "0028d3c59bdc",
+      "os": "Linux",
+      "status": "offline",
+      "busy": false,
+      "version": "2.335.1",
+      "labels": [
+        {
+          "id": 0,
+          "name": "self-hosted",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "Linux",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "X64",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "thesis-runner",
+          "type": "custom"
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "name": "299a101d6dfb",
+      "os": "Linux",
+      "status": "offline",
+      "busy": false,
+      "version": "2.335.1",
+      "labels": [
+        {
+          "id": 0,
+          "name": "self-hosted",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "Linux",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "X64",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "thesis-runner",
+          "type": "custom"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "name": "d070a4f4eeae",
+      "os": "Linux",
+      "status": "offline",
+      "busy": false,
+      "version": "2.335.1",
+      "labels": [
+        {
+          "id": 0,
+          "name": "self-hosted",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "Linux",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "X64",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "thesis-runner",
+          "type": "custom"
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "name": "da9586bc3004",
+      "os": "Linux",
+      "status": "offline",
+      "busy": false,
+      "version": null,
+      "labels": [
+        {
+          "id": 0,
+          "name": "self-hosted",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "Linux",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "X64",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "thesis-runner",
+          "type": "custom"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "name": "9a1c0c871f96",
+      "os": "Linux",
+      "status": "offline",
+      "busy": false,
+      "version": "2.335.1",
+      "labels": [
+        {
+          "id": 0,
+          "name": "self-hosted",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "Linux",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "X64",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "thesis-runner",
+          "type": "custom"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "name": "e054303e38ff",
+      "os": "Linux",
+      "status": "offline",
+      "busy": false,
+      "version": "2.335.1",
+      "labels": [
+        {
+          "id": 0,
+          "name": "self-hosted",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "Linux",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "X64",
+          "type": "read-only"
+        },
+        {
+          "id": 0,
+          "name": "thesis-runner",
+          "type": "custom"
+        }
+      ]
+        {
+          "id": 0,
+          "name": "thesis-runner",
+          "type": "custom"
+        }
+      ]
+          "name": "thesis-runner",
+          "type": "custom"
+        }
+      ]
+        }
+      ]
+    }
+  ]
+}
+}

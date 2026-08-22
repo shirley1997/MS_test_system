@@ -20,7 +20,7 @@ import time
 A = ["A1a", "A1b", "A2", "A3"]     # nexus repository
 B1 = ["B1a", "B1b", "B1c", "B1d"]  # package-manager configuration (which repo URL in A it points to)
 B2 = ["B2a", "B2b", "B2c"] # version specifier (pinned / range / unspcified)
-C = ["C1a", "C1b", "C1c"] # CI pipeline operation type: initial install / package update / rebuild with lockfile
+C1 = ["C1a", "C1b", "C1c"] # CI pipeline operation type: initial install / package update / rebuild with lockfile
 ecosystem = ["nodejs", "python", "java"]
 ecosystem_short = {"nodejs":"npm", "python":"pip", "java":"mvn"}  # a dict
 
@@ -47,6 +47,10 @@ dotenv.load_dotenv()
 nexus_username = os.environ.get("nexus_username")
 nexus_password = os.environ.get("nexus_password")
 
+service_pipeline_file = {"nodejs": "service-ci-nodejs.yml", 
+                         "python": "service-ci-python.yml", 
+                         "java": "service-ci-java.yml"}
+
 
 
 
@@ -54,7 +58,7 @@ nexus_password = os.environ.get("nexus_password")
 
 # phase 1: determine invalid combination & generate experiment matrix
 # assume all combinations are valid, only for specific condition it will become invalid
-def is_valid_combination(ecosystem, A, B1, B2, C) -> tuple[bool, str]:
+def is_valid_combination(ecosystem, A, B1, B2, C1) -> tuple[bool, str]:
     combi_valid_status = True
     invalid_reason = ""
     if A == "A3" and B1 == "B1c":
@@ -68,7 +72,7 @@ def is_valid_combination(ecosystem, A, B1, B2, C) -> tuple[bool, str]:
 
 def generate_matrix() -> list[dict]:
     experiment_matrix = []   # need initilization
-    combinations = itertools.product(ecosystem, A, B1, B2, C)
+    combinations = itertools.product(ecosystem, A, B1, B2, C1)
     for eco, a_option, b1_option, b2_option, c_option in combinations:
         combi_valid_status, invalid_reason = is_valid_combination(eco, a_option, b1_option, b2_option, c_option)
         cell_id = ecosystem_short[eco] + "_" + a_option + "_" + b1_option + "_" + b2_option + "_" + c_option
@@ -259,8 +263,10 @@ def invalidate_nexus_cache(ecosystem, cell_A_option):
         print(f"cache of {proxy_repo[ecosystem]} and {group_repo[ecosystem][cell_A_option]} discarded")
 
 # phase 7: set up connection between central automated pipeline and github actions runner
-# use gh api to get registration token, which is needed for connect a runner with github
-# then start the runner, put the obtained token as a parameter in the start command
+# 1. use gh api to get registration token, which is needed for connect a runner with github
+# 2. use gh api to start the runner, put the obtained token as a parameter in the start command
+# 3. use gh api to check if the self-hosted runner is online before dispatch a workflow
+# Note: the git repo address is not hard coded here, so this code can still be used for other user / repository
 def get_registration_token(owner, repo) -> str:
    token = subprocess.run(["gh", "api", 
                            "--method", "POST", "-H", 
@@ -273,14 +279,16 @@ def get_registration_token(owner, repo) -> str:
                         text=True,).stdout.strip()
    return token
 
+# add --rm option so container can be self-removed after ephemeral runner de-registered
 def start_runner_container (cell_id, token, repo_url, image_tag) -> str:
     start_runner = subprocess.run(
     [
         "docker", "run", "-d", "--rm",
-        "--name", f"thesis-runner-{cell_id}",
+        "--name", f"thesis-runner-{cell_id}",   # set up container name
         "-e", f"GH_REPO_URL={repo_url}",
         "-e", f"GH_TOKEN={token}",
         "-e", "RUNNER_LABELS=thesis-runner",
+        "-e", f"RUNNER_NAME=thesis-runner-{cell_id}",   # set up the runner name, so we can look for specific runner to check online status
         image_tag,
     ],
     check=True,
@@ -289,27 +297,98 @@ def start_runner_container (cell_id, token, repo_url, image_tag) -> str:
 ).stdout.strip()
     return start_runner
 
-
-def wait_for_runner_online(owner, repo, timeout_s=60, check_interval_s=5) -> bool:
-    elapsed = 0
-    while elapsed <= timeout_s:
-        result = subprocess.run(
+# "docker run -d" returns as soon as the container process starts (create a new runner container),
+# not once the runner inside has actually finished registering with GitHub 
+# there's a gap between "container started" and "runner ready to accept jobs,"
+# so dispatching a workflow immediately risks a race condition (two things happening at once, in an unpredictable order relative to each other)
+# Without this check: if a runner's registration/startup fails (bad token, container crash, network issue etc.),
+#  the later gh run watch step (obeserve workflow run) has no timeout of its own and would hang forever
+# waiting for a runner that never shows up. 
+# This function is what catches that within a defined time interval so the pipeline can move on to the next cell.
+def wait_for_runner_online(owner, repo, expected_runner_name, timeout_s=60, check_interval_s=5) -> bool:
+    current_time = 0
+    while current_time <= timeout_s:
+        runner_info = subprocess.run(
             ["gh", "api", f"repos/{owner}/{repo}/actions/runners"],
             capture_output=True,
             text=True,
         )
-        runners_data = json.loads(result.stdout)   # same json.loads(result.stdout) pattern you'll use elsewhere
+        runners_data = json.loads(runner_info.stdout)   # loads a string
 
         for runner in runners_data["runners"]:
-            runner_labels = runner["labels"]        # a list of dicts, e.g. [{"name": "thesis-runner", ...}]
-            for label in runner_labels:
-                if label["name"] == "thesis-runner" and runner["status"] == "online":
-                    return True
-
-        time.sleep(check_interval_s)
-        elapsed += check_interval_s
+            if runner["name"] == expected_runner_name and runner["status"] == "online":
+                return True   
+            
+        time.sleep(check_interval_s)   # run the command every 5 seconds
+        current_time += check_interval_s
 
     return False
+
+# phase 8: dispatch service pipeline (workflow) according to the cell
+# and download the artifacts (a zip file containing evidence) produced by service pipeline
+
+def dispatch_cell(owner, repo, ecosystem, cell):
+    subprocess.run(
+    [
+        "gh", "workflow", "run", service_pipeline_file[ecosystem],
+        "--repo", f"{owner}/{repo}",
+        "-f", f"cell_id={cell["cell_id"]}",
+        "-f", f"A={cell["A - private registry configuration"]}",
+        "-f", f"B1={cell["B1 - package manager configuration"]}",
+        "-f", f"B2={cell["B2 - version specifier"]}",
+        "-f", f"C1={cell["C - pipeline operation type"]}",
+    ],
+    check=True,
+    capture_output=True,
+    text=True,
+)
+
+def find_run_id(owner, repo, service_pipeline_file, cell_id) -> str:
+    workflow_run_info = subprocess.run(
+    [
+        "gh", "run", "list",
+        "--repo", f"{owner}/{repo}",
+        "--workflow", service_pipeline_file,
+        "--limit", "1",
+        "--json", "databaseId,status,createdAt",
+    ],
+    check=True,
+    capture_output=True,
+    text=True,
+)
+    workflow_data = json.loads(workflow_run_info.stdout)
+    workflow_run_id = workflow_data[0]["databaseId"]
+    return str(workflow_run_id)   # return an int!! need to wrap it as str(run_id)
+
+# observe workflow (service pipeline) run 
+# check = False: a failed run should still go to classification, not raise. 
+# if check = True, it raise an exception and kill the loop on the first failed cell
+def wait_for_run_complete(owner, repo, run_id, timeout_s):
+    subprocess.run(
+    ["gh", "run", "watch", str(run_id), "--repo", f"{owner}/{repo}", "--exit-status", "--compact"],
+    check=False,   
+    capture_output=True,
+    text=True,
+)
+
+def download_artifact(owner, repo, run_id, artifact_name, dest_dir):
+    try:
+        subprocess.run(
+            [
+                "gh", "run", "download", str(run_id),
+                "--repo", f"{owner}/{repo}",
+                "-n", artifact_name,
+                "-D", dest_dir,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return dest_dir
+    except:
+        return None
+
+    
 
 
 
@@ -389,5 +468,9 @@ if __name__ == "__main__":
 
 # a test for phase 5
     invalidate_nexus_cache("nodejs", "A1a")
+
+# no code test needed for phase 6, only manually operation, the output is already observed, test passed
+
+# phase 7: test file in automation_process\central_automated_pipeline\test_phase7.py
 
 
