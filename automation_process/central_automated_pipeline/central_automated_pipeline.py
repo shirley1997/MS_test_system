@@ -51,6 +51,8 @@ service_pipeline_file = {"nodejs": "service-ci-nodejs.yml",
                          "python": "service-ci-python.yml", 
                          "java": "service-ci-java.yml"}
 
+artifact_name_suffix = {"nodejs": "npm_raw", "python": "pip_raw", "java": "mvn_raw"}
+
 
 
 
@@ -194,15 +196,15 @@ def read_pip_evidence(install_report_path) -> list[dict]:
                 )
     return pip_package_found
 
-def read_java_evidence(java_cell) -> list[dict]:
+def read_java_evidence(java_cell, base_dir) -> list[dict]:
     cell_id = java_cell["cell_id"]
     java_c1_value = java_cell["C - pipeline operation type"]
     try:
         if java_c1_value == "C1a" or java_c1_value == "C1b":
-            with open(f"{cell_id}_lockfile.json", 'r', encoding='utf-8') as json_file:
+            with open(f"{base_dir}/{cell_id}_lockfile.json", 'r', encoding='utf-8') as json_file:
                 mvn_lockfile_data = json.load(json_file)    # json_file is a file object, json.load() should be used here
         else:
-            with open(f"{cell_id}_rebuild-lockfile.json", 'r', encoding='utf-8') as json_file:            
+            with open(f"{base_dir}/{cell_id}_rebuild-lockfile.json", 'r', encoding='utf-8') as json_file:            
                 mvn_lockfile_data = json.load(json_file)
     except:
         return None
@@ -341,7 +343,8 @@ def dispatch_cell(owner, repo, ecosystem, cell):
     check=True,
     capture_output=True,
     text=True,
-)
+    )
+    print(f"dispatching cell: {cell["cell_id"]}")
 
 def find_run_id(owner, repo, service_pipeline_file, cell_id) -> str:
     workflow_run_info = subprocess.run(
@@ -363,13 +366,14 @@ def find_run_id(owner, repo, service_pipeline_file, cell_id) -> str:
 # observe workflow (service pipeline) run 
 # check = False: a failed run should still go to classification, not raise. 
 # if check = True, it raise an exception and kill the loop on the first failed cell
-def wait_for_run_complete(owner, repo, run_id, timeout_s):
+def wait_for_run_complete(owner, repo, run_id):
     subprocess.run(
     ["gh", "run", "watch", str(run_id), "--repo", f"{owner}/{repo}", "--exit-status", "--compact"],
     check=False,   
-    capture_output=True,
-    text=True,
-)
+    # capture_output=True,
+    # text=True,
+    )
+    print(f"pipeline run {run_id} finished")
 
 def download_artifact(owner, repo, run_id, artifact_name, dest_dir):
     try:
@@ -388,10 +392,132 @@ def download_artifact(owner, repo, run_id, artifact_name, dest_dir):
     except:
         return None
 
+# phase 9: connect everything together
+def get_git_commit() -> str:
+        return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+def build_result_row(cell, classification, package_evidence, run_id, dest_dir, git_commit):
+    package_names = internal_packages[cell["ecosystem"]]
+
+    pk1 = None
+    pk2 = None
+    if package_evidence != None:
+        for evidence in package_evidence:
+            if evidence["name"] == package_names[0]:
+                pk1 = evidence
+            if evidence["name"] == package_names[1]:
+                pk2 = evidence
+
+    pk1_name = ""
+    pk1_version = ""
+    pk1_url = ""
+    pk2_name = ""
+    pk2_version = ""
+    pk2_url = ""
+
+    if pk1 != None:
+        pk1_name = pk1["name"]
+        pk1_version = pk1["version"]
+        pk1_url = pk1["url"]
+
     
+    if pk2 != None:
+        pk2_name = pk2["name"]
+        pk2_version = pk2["version"]
+        pk2_url = pk2["url"]
+
+    cell_result_row = {
+        "cell_id": cell["cell_id"],
+        "timestamp": datetime.datetime.now(),
+        "ecosystem": cell["ecosystem"],
+        "A - private registry configuration": cell["A - private registry configuration"],
+        "B1 - package manager configuration": cell["B1 - package manager configuration"],
+        "B2 - version specifier": cell["B2 - version specifier"],
+        "C - pipeline operation type": cell["C - pipeline operation type"],
+        "classification": classification,
+        "pk1_name": pk1_name,
+        "pk1_version": pk1_version,
+        "pk1_url": pk1_url,
+        "pk2_name": pk2_name,
+        "pk2_version": pk2_version,
+        "pk2_url": pk2_url,
+        "artifact_path": dest_dir,
+        "git_commit": git_commit,
+        "github_run_id": run_id,
+    }
+    return cell_result_row
+
+def run_one_cell(cell, owner, repo, repo_url, image_tag, checkpoint_path, result_file_path):
+    # identify invalid cells from experiment matrix, mark it as complete
+    if cell["valid?"] == False:
+        mark_cell_as_finish(checkpoint_path, cell["cell_id"])
+        return
+
+    # discard nexus cache
+    invalidate_nexus_cache(cell["ecosystem"], cell["A - private registry configuration"])
+
+    # obtain a registration token, start runner container, check if runner is online
+    token = get_registration_token(owner, repo)
+    print("registration token obtained:", token)   
+
+    container_id = start_runner_container(cell["cell_id"], token, repo_url, image_tag)
+    print("runner container just created:", container_id)
+
+    runner_online = wait_for_runner_online(owner, repo, f"thesis-runner-{cell["cell_id"]}", timeout_s=60, check_interval_s=5)
+    print("is the new created runner online now?:", runner_online)   # should be True within a few seconds
+
+    # add error handling logic when runner never went online after defined time limit
+    # if never online then this cell is "runner_offline_error" in result file, continue with next cell
+    if runner_online == False:
+        print(f"runner is not online for cell {cell['cell_id']} after time limit, marking as runner_offline_error")
+        runner_error_row = build_result_row(cell, "runner_offline_error", None, None, dest_dir=None, git_commit=get_git_commit())
+        write_result_file(result_file_path, runner_error_row)
+        mark_cell_as_finish(checkpoint_path, cell["cell_id"])
+        return
+
+    # runner successfully registered, container started -> dispatch job of service pipeline, document workflow run id
+    dispatch_cell(owner, repo, cell["ecosystem"], cell)
+    run_id = find_run_id(owner, repo, service_pipeline_file[cell["ecosystem"]], cell["cell_id"])
+    print("run_id of the workflow:", run_id)
+
+    # observe workflow log and wait for workflow to finish
+    wait_for_run_complete(owner, repo, run_id)
+
+    # download the artifacts produced by service pipeline, do classification
+    dest_dir = f"automation_process/central_automated_pipeline/artifact_download/{cell["cell_id"]}"
+    artifact_name = f"{cell["cell_id"]}_{artifact_name_suffix[cell["ecosystem"]]}"
+    result = download_artifact(owner, repo, run_id, artifact_name, dest_dir)
+    print("download artifact produced by service pipeline:", result)
+
+    if (cell["ecosystem"] == "nodejs"):
+        package_evidence = read_npm_evidence(f"{dest_dir}/package-lock.json")
+    elif (cell["ecosystem"] == "python"):
+        package_evidence = read_pip_evidence(f"{dest_dir}/{cell['cell_id']}_install-report.json")
+    elif (cell["ecosystem"] == "java"):
+        package_evidence = read_java_evidence(cell, base_dir = dest_dir)
+    classification = classify_logic(cell["ecosystem"], package_evidence)
+
+    # make a result row, add to result file, mark this cell as complete
+    row_to_append = build_result_row(cell, classification, package_evidence, run_id, dest_dir, get_git_commit())
+
+    write_result_file(result_file_path, row_to_append)
+    mark_cell_as_finish(checkpoint_path, cell["cell_id"])
 
 
+# after the whole main experiment finishes, copy the previously identified invalid combinations to the result.csv file
+def copy_invalid_rows(matrix_rows, result_file_path):
+    for cell in matrix_rows:
+        if cell["valid?"] == False:
+            row = build_result_row(cell, "invalid_configuration", None, None, dest_dir=None, git_commit=get_git_commit())
+            write_result_file(result_file_path, row)
 
+
+def experiment_loop(matrix_rows, owner, repo, repo_url, image_tag, checkpoint_path, result_file_path):
+    finished_cells = load_finished_cells(checkpoint_path)
+    for cell in matrix_rows: 
+        if is_finished(cell["cell_id"], finished_cells) == False:
+            run_one_cell(cell, owner, repo, repo_url, image_tag, checkpoint_path, result_file_path)
+    copy_invalid_rows(matrix_rows, result_file_path)
 
 
 
@@ -399,78 +525,91 @@ def download_artifact(owner, repo, run_id, artifact_name, dest_dir):
 
 if __name__ == "__main__":
 
-    # a test for phase 1
-    full_experiment_matrix = generate_matrix()
-    write_matrix_csv(full_experiment_matrix, "automation_process/central_automated_pipeline/experiment_matrix.csv")
-    print(f"finish generating experiment_matrix.csv , {len(full_experiment_matrix)} rows in total")
-    checkpoint_path = Path('automation_process/central_automated_pipeline/checkpoint.json')
 
-    # a test for phase 2
-    mark_cell_as_finish(checkpoint_path, "npm_A1a_B1a_B2c_C1a")
-    mark_cell_as_finish(checkpoint_path, "mvn_A1a_B1a_B2b_C1a")
-    checkpoint_load= load_finished_cells(checkpoint_path)
+#     # a test for phase 1
+#     full_experiment_matrix = generate_matrix()
+#     write_matrix_csv(full_experiment_matrix, "automation_process/central_automated_pipeline/experiment_matrix.csv")
+#     print(f"finish generating experiment_matrix.csv , {len(full_experiment_matrix)} rows in total")
+#     checkpoint_path = Path('automation_process/central_automated_pipeline/checkpoint.json')
 
-    print(is_finished("npm_A1a_B1a_B2c_C1a", checkpoint_load))
-    print(is_finished("mvn_A1a_B1a_B2b_C1a", checkpoint_load))
-    print(is_finished("pip_A1a_B1a_B2b_C1a", checkpoint_load))
+#     # a test for phase 2
+#     mark_cell_as_finish(checkpoint_path, "npm_A1a_B1a_B2c_C1a")
+#     mark_cell_as_finish(checkpoint_path, "mvn_A1a_B1a_B2b_C1a")
+#     checkpoint_load= load_finished_cells(checkpoint_path)
+
+#     print(is_finished("npm_A1a_B1a_B2c_C1a", checkpoint_load))
+#     print(is_finished("mvn_A1a_B1a_B2b_C1a", checkpoint_load))
+#     print(is_finished("pip_A1a_B1a_B2b_C1a", checkpoint_load))
         
 
-    # a test for phase 3
-    result_file_path = Path('automation_process/central_automated_pipeline/results.csv')
+#     # a test for phase 3
+#     result_file_path = Path('automation_process/central_automated_pipeline/results.csv')
 
-    test_row = {
-    "cell_id": "npm_A1a_B1a_B2a_C1a",
-    "timestamp": datetime.datetime.now(),
-    "ecosystem": "nodejs",
-    "A - private registry configuration": "A1a",
-    "B1 - package manager configuration": "B1a",
-    "B2 - version specifier": "B2a",
-    "C - pipeline operation type": "C1a",
-    "classification": "private_resolved",
-    "pk1_name": "xueting-thesis-event-jianding",
-    "pk1_version": "1.0.0",
-    "pk1_url": "http://localhost:8081/repository/npm-internal-hosted/fake/path",
-    "pk2_name": "xueting-thesis-service-fasong",
-    "pk2_version": "1.0.0",
-    "pk2_url": "http://localhost:8081/repository/npm-internal-hosted/fake/path2",
-    "artifact_path": "fake/path",
-    "git_commit": "adfiuahfdfihvfoih",
-    "github_run_id": "99999999999999999",
-}
+#     test_row = {
+#     "cell_id": "npm_A1a_B1a_B2a_C1a",
+#     "timestamp": datetime.datetime.now(),
+#     "ecosystem": "nodejs",
+#     "A - private registry configuration": "A1a",
+#     "B1 - package manager configuration": "B1a",
+#     "B2 - version specifier": "B2a",
+#     "C - pipeline operation type": "C1a",
+#     "classification": "private_resolved",
+#     "pk1_name": "xueting-thesis-event-jianding",
+#     "pk1_version": "1.0.0",
+#     "pk1_url": "http://localhost:8081/repository/npm-internal-hosted/fake/path",
+#     "pk2_name": "xueting-thesis-service-fasong",
+#     "pk2_version": "1.0.0",
+#     "pk2_url": "http://localhost:8081/repository/npm-internal-hosted/fake/path2",
+#     "artifact_path": "fake/path",
+#     "git_commit": "adfiuahfdfihvfoih",
+#     "github_run_id": "99999999999999999",
+# }
 
-    write_result_file(result_file_path, test_row)
-
-
-    #  test for phase 4
-    print(classify_logic("nodejs", None))    # verified result: resolution_error
-
-    print(classify_logic("nodejs", [
-    {"name": "xueting-thesis-event-jianding", "version": "1.0.0", "url": "x"},
-    {"name": "xueting-thesis-service-fasong", "version": "1.0.0", "url": "x"},
-]))
-
-    print(classify_logic("nodejs", [
-    {"name": "xueting-thesis-event-jianding", "version": "1.0.3", "url": "x"},
-    {"name": "xueting-thesis-service-fasong", "version": "1.0.0", "url": "x"},
-]))
-
-    print(classify_logic("nodejs", [
-    {"name": "xueting-thesis-event-jianding", "version": "1.0.0", "url": "x"},
-]))     
-    print(classify_logic("nodejs", [
-    {"name": "xueting-thesis-event-jianding", "version": "2.5.0", "url": "x"},
-    {"name": "xueting-thesis-service-fasong", "version": "1.0.0", "url": "x"},
-]))
+#     write_result_file(result_file_path, test_row)
 
 
-    package_evidence = read_pip_evidence(Path("services/python/test-install-report3.json"))
-    print(classify_logic("python", package_evidence))
+#     #  test for phase 4
+#     print(classify_logic("nodejs", None))    # verified result: resolution_error
 
-# a test for phase 5
-    invalidate_nexus_cache("nodejs", "A1a")
+#     print(classify_logic("nodejs", [
+#     {"name": "xueting-thesis-event-jianding", "version": "1.0.0", "url": "x"},
+#     {"name": "xueting-thesis-service-fasong", "version": "1.0.0", "url": "x"},
+# ]))
 
-# no code test needed for phase 6, only manually operation, the output is already observed, test passed
+#     print(classify_logic("nodejs", [
+#     {"name": "xueting-thesis-event-jianding", "version": "1.0.3", "url": "x"},
+#     {"name": "xueting-thesis-service-fasong", "version": "1.0.0", "url": "x"},
+# ]))
 
-# phase 7: test file in automation_process\central_automated_pipeline\test_phase7.py
+#     print(classify_logic("nodejs", [
+#     {"name": "xueting-thesis-event-jianding", "version": "1.0.0", "url": "x"},
+# ]))     
+#     print(classify_logic("nodejs", [
+#     {"name": "xueting-thesis-event-jianding", "version": "2.5.0", "url": "x"},
+#     {"name": "xueting-thesis-service-fasong", "version": "1.0.0", "url": "x"},
+# ]))
 
 
+#     package_evidence = read_pip_evidence(Path("services/python/test-install-report3.json"))
+#     print(classify_logic("python", package_evidence))
+
+# # a test for phase 5
+#     invalidate_nexus_cache("nodejs", "A1a")
+
+# # no code test needed for phase 6, only manually operation, the output is already observed, test passed
+
+# # phase 7 & 8: test file in automation_process\central_automated_pipeline\test_phase7_8.py
+
+
+    owner = "shirley1997"
+    repo = "MS_test_system"
+    repo_url = "https://github.com/shirley1997/MS_test_system"
+    image_tag = "thesis-runner:2.335.1"
+    checkpoint_path = Path("automation_process/central_automated_pipeline/checkpoint.json")
+    result_file_path = Path("automation_process/central_automated_pipeline/results.csv")
+
+    matrix_rows = generate_matrix()
+    write_matrix_csv(matrix_rows, "automation_process/central_automated_pipeline/experiment_matrix.csv")
+
+    test_cells = matrix_rows[:3]   # only test 3 cells for now, not the full 432 
+    experiment_loop(test_cells, owner, repo, repo_url, image_tag, checkpoint_path, result_file_path)

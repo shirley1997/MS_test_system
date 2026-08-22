@@ -51,3 +51,4 @@ effective-pom-checks
 ID-effective-pom-checks
 maven_lockfile_example.json
 automation_process/central_automated_pipeline/checkpoint.json
+automation_process/central_automated_pipeline/artifact_download
