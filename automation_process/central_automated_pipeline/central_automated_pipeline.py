@@ -15,6 +15,7 @@ import requests
 import dotenv    # need this to read .env file (for nexus authentication)
 import os
 import time
+import signal
 
 
 A = ["A1a", "A1b", "A2", "A3"]     # nexus repository
@@ -54,7 +55,14 @@ service_pipeline_file = {"nodejs": "service-ci-nodejs.yml",
 artifact_name_suffix = {"nodejs": "npm_raw", "python": "pip_raw", "java": "mvn_raw"}
 
 
+stop_requested = False
 
+def handle_stop_signal(signum, frame):
+    global stop_requested
+    stop_requested = True
+    print("\nCtrl+C is pressed, this script will stop safely, the current cell is not marked as done.")
+
+signal.signal(signal.SIGINT, handle_stop_signal)
 
 
 
@@ -159,7 +167,8 @@ def read_npm_evidence(package_lock_path) -> list[dict]:
     try:
         with open(package_lock_path, 'r', encoding='utf-8') as json_File:
             package_lock_data = json.load(json_File)
-    except:
+    except Exception as e:
+        print(e)
         return None
     
     npm_package_found = []     # create an empty list
@@ -206,7 +215,8 @@ def read_java_evidence(java_cell, base_dir) -> list[dict]:
         else:
             with open(f"{base_dir}/{cell_id}_rebuild-lockfile.json", 'r', encoding='utf-8') as json_file:            
                 mvn_lockfile_data = json.load(json_file)
-    except:
+    except Exception as e:
+        print(e)
         return None
 
     mvn_package_found = []     # create an empty list
@@ -470,6 +480,9 @@ def run_one_cell(cell, owner, repo, repo_url, image_tag, checkpoint_path, result
     runner_online = wait_for_runner_online(owner, repo, f"thesis-runner-{cell["cell_id"]}", timeout_s=60, check_interval_s=5)
     print("is the new created runner online now?:", runner_online)   # should be True within a few seconds
 
+    if stop_requested:
+        return
+    
     # add error handling logic when runner never went online after defined time limit
     # if never online then this cell is "runner_offline_error" in result file, continue with next cell
     if runner_online == False:
@@ -486,6 +499,8 @@ def run_one_cell(cell, owner, repo, repo_url, image_tag, checkpoint_path, result
 
     # observe workflow log and wait for workflow to finish
     wait_for_run_complete(owner, repo, run_id)
+    if stop_requested:
+        return
 
     # download the artifacts produced by service pipeline, do classification
     dest_dir = f"automation_process/central_automated_pipeline/artifact_download/{cell["cell_id"]}"
@@ -519,6 +534,8 @@ def copy_invalid_rows(matrix_rows, result_file_path):
 def experiment_loop(matrix_rows, owner, repo, repo_url, image_tag, checkpoint_path, result_file_path):
     finished_cells = load_finished_cells(checkpoint_path)
     for cell in matrix_rows: 
+        if stop_requested:
+            break
         if is_finished(cell["cell_id"], finished_cells) == False:
             run_one_cell(cell, owner, repo, repo_url, image_tag, checkpoint_path, result_file_path)
     copy_invalid_rows(matrix_rows, result_file_path)
@@ -610,18 +627,27 @@ if __name__ == "__main__":
     checkpoint_path = Path("automation_process/central_automated_pipeline/checkpoint.json")
     result_file_path = Path("automation_process/central_automated_pipeline/results.csv")
 
-    target_cell_ids = [
-    "pip_A1a_B1a_B2a_C1a",   # python sanity check — read_pip_evidence never run for real yet
-    "mvn_A1a_B1a_B2a_C1a",   # java sanity check — read_java_evidence never run for real yet
-    "mvn_A3_B1a_B2b_C1c",    # expected malicious_resolved (confirmed on 09.08 pilot — leaks to real Maven Central)
-    "mvn_A2_B1a_B2a_C1c",    # the flagged untested edge case from Phase 4 (public deps can't resolve)
-    "npm_A3_B1c_B2a_C1a",    # invalid combo — should short-circuit, no infra touched
-    ]
 
+# for pilot test with several cell id
+    # target_cell_ids = [
+    # "pip_A1a_B1a_B2a_C1a",   # python sanity check — read_pip_evidence never run for real yet
+    # "mvn_A1a_B1a_B2a_C1a",   # java sanity check — read_java_evidence never run for real yet
+    # "mvn_A3_B1a_B2b_C1c",    # expected malicious_resolved (confirmed on 09.08 pilot — leaks to real Maven Central)
+    # "mvn_A2_B1a_B2a_C1c",    # the flagged untested edge case from Phase 4 (public deps can't resolve)
+    # "npm_A3_B1c_B2a_C1a",    # invalid combo — should short-circuit, no infra touched
+    # ]
+
+    # all_matrix_rows = generate_matrix()
+    # test_cells = [cell for cell in all_matrix_rows if cell["cell_id"] in target_cell_ids]
+
+    # experiment_loop(test_cells, owner, repo, repo_url, image_tag, checkpoint_path, result_file_path)
+
+
+# main experiment run: run all cells
     all_matrix_rows = generate_matrix()
-    test_cells = [cell for cell in all_matrix_rows if cell["cell_id"] in target_cell_ids]
+    write_matrix_csv(all_matrix_rows, "automation_process/central_automated_pipeline/experiment_matrix.csv")
 
-    experiment_loop(test_cells, owner, repo, repo_url, image_tag, checkpoint_path, result_file_path)
+    experiment_loop(all_matrix_rows, owner, repo, repo_url, image_tag, checkpoint_path, result_file_path)
 
 
 
