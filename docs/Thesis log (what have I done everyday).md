@@ -2004,3 +2004,78 @@ mvn help:effective-settings
 - [ ] Run the still-missing pilot coverage: one Python cell and one Java cell through the real pipeline (never tested for real yet, only via hand-fed fixtures), a cell expected to produce `malicious_resolved`, the flagged untested `A2×B1a×C1c` Maven edge case from Phase 4, one invalid cell + confirm `copy_invalid_rows` writes its row correctly, and a real crash-recovery test using the fixed Ctrl+C handling.
 - [ ] Only after all of the above passes: a small (~dozen-cell) pilot subset spanning all three ecosystems, then the full 432-cell official run.
 - [ ] CLI (`--matrix` / `--run-all` / `--cell` / `--cells`) still not built — deliberately deferred this session to focus on getting `run_one_cell`/`experiment_loop` correct first.
+
+# 23 - 25.08.2026 central automated pipeline: Ctrl+C fix applied, full 432-cell run completed
+
+**Stand: Applied the Ctrl+C/script interruption fix designed on 21-22.08, found and fixed one more bug while wiring it in. Learned several real-world lessons about self-hosted-runner infrastructure while stress-testing interrupts. Survived two uninteractive-run incidents (a GitHub API rate-limit incident, a WiFi outage) using the checkpoint/results.csv design. Committed and pushed the pipeline, then ran the full 432-cell experiment successfully. `results.csv` is complete (with 432 lines now).**
+
+## 1. Applied the Ctrl+C fix, found one more bug while doing it
+
+- Added `import signal`, a module-level `stop_requested` flag, and a `handle_stop_signal(signum, frame)` handler registered via `signal.signal(signal.SIGINT, handle_stop_signal)`.
+- Added `stop_requested` checks in `run_one_cell` (after the two genuinely slow waits) and in `experiment_loop`'s main `for` loop.
+- **Bug found while wiring this in**: first version combined the check into the existing `if runner_online == False:` branch as `if runner_online == False or stop_requested:`. Problem: if Ctrl+C happened to land right as the runner *did* come online successfully, this branch is still true — writing a false `runner_offline_error` row into `results.csv` and permanently marking the cell done, even though nothing actually failed. Fixed by splitting into two independent checks: a plain `if stop_requested: return` (no row written, not marked done) placed *before* the separate, untouched `if runner_online == False:` branch.
+- **Verified for real**: interrupted a cell during `wait_for_runner_online`'s `time.sleep()` — got a clean `KeyboardInterrupt` traceback, and `checkpoint.json` correctly did **not** contain that cell afterward. Confirmed this is a different situation from the earlier-diagnosed case (Ctrl+C landing inside a `gh` subprocess call and getting silently absorbed). a plain Python `sleep()` is reliably interruptible on its own, no custom handler needed for that specific case; the handler is what's needed for the subprocess-absorption case.
+
+## 2. Learned: `--rm` alone doesn't stop anything, it only cleans up after a stop
+
+- Found via Docker Desktop: after Ctrl+C interrupted a cell, its runner container was still "Running", idle, "Listening for Jobs" — `--rm` only deletes a container *after* its process exits; Ctrl+C on the Python script has zero effect on an already-launched Docker container, since they're independent processes.
+- Decided **not** to add automatic container teardown to `run_one_cell` for this — deliberately kept the pipeline's scope focused on the actual research logic rather than infra robustness features, consistent with the original Phase 6 decision. Manual `docker stop`/`docker rm -f` when needed is enough.
+- Learned a cleaner manual cleanup: `docker stop thesis-runner-{cell_id}` alone (no `-f`/`rm` needed) — since the container was started with `--rm`, a graceful stop signal makes the runner process exit, which then triggers `--rm`'s automatic removal on its own.
+
+## 3. Repeated manual interrupt/kill testing caused a real GitHub-side runner conflict mess
+
+- Rapidly interrupting and force-killing runner containers during testing (without letting GitHub's backend release the old session first) caused new registrations under the same `cell_id`-based name to get stuck: runner logs showed `"A session for this runner already exists... Conflict. Retrying until reconnected."` — the runner never reached "Listening for Jobs," so dispatched workflow runs just piled up stuck in **Queued**.
+- **Full cleanup procedure used** to recover:
+  ```powershell
+  # cancel stuck workflow runs directly through GitHub UI, without using command
+
+  # remove all leftover thesis-runner container. when the container is stopped, it will automatically disappear. (stop through docker desktop, no commnd used)
+
+  # delete old runner registration on GitHub's side using GitHub API
+  # first check which old runner is still there, manully observe the id
+  gh api repos/shirley1997/MS_test_system/actions/runners 
+  #then delete the runner with corresponding runner ID
+  gh api --method DELETE repos/shirley1997/MS_test_system/actions/runners/{id}
+  ```
+- Also learned: request of cancel a workflow doesn't work immediately on a job whose runner was already force-killed mid-execution — there's no runner left to acknowledge the cancel request, so the job just sits "in progress" until GitHub's own dead-runner timeout eventually catches it (can take a while). Not a pipeline bug, a known self-hosted-runner characteristic.
+- Considered removing the checkpoint logic entirely out of frustration with this mess — but decide to keep the checkpoint logic: the mechanism itself was already proven correct, and the actual pain was from deliberately stress-testing mid-job container kills (a testing artifact), not something the real unattended run would trigger the same way, since `--ephemeral` only ever kills a runner after normal job completion in real use.
+
+## 4. Re-verified the checkpoint + classification logic with a clean, uninterrupted pilot rerun (24.08)
+
+- Reran the same 5 target cells from before, uninterrupted this time. 4 of 5 were already done and correctly skipped; only `mvn_A3_B1a_B2b_C1c` (never completed before) actually ran.
+- **Result: `mvn_A3_B1a_B2b_C1c` → `malicious_resolved`**, both packages at `1.0.3`, resolved from `https://repo.maven.apache.org/...` , matches the 09.08 manual pilot finding exactly, now reproduced through the real automated pipeline with the `is_from_nexus` classification fix in place. Also nicely confirms the classification design: this URL has no Nexus port in it at all, but still correctly classified `malicious_resolved`, exactly as intended.
+- `npm_A3_B1c_B2a_C1a`'s `invalid_configuration` row also appeared correctly via `copy_invalid_rows` this time, since the run wasn't interrupted before reaching it.
+
+## 5. Pre-full-run (24.08)
+
+- Deleted all generated files (`checkpoint.json`, `results.csv`, `experiment_matrix.csv`, everything under `artifact_download/`) for a clean slate.
+- Committed and pushed `central_automated_pipeline.py` — noticed every `results.csv` row so far still recorded `git_commit=5e7ab9a...`, a old commit from *before* all of the Phase 9 bug-fixing and the Ctrl+C work, since the script itself had never been committed since then. Pushing brought provenance back in sync for the real run.
+- Changed `__main__` from the filtered `target_cell_ids`/`test_cells` subset to the full matrix: `experiment_loop(all_matrix_rows, owner, repo, repo_url, image_tag, checkpoint_path, result_file_path)`.
+
+## 6. Incident during the whole experiment run: `KeyError: 'runners'` crash
+
+- Script crashed with `KeyError: 'runners'` inside `wait_for_runner_online`, at `for runner in runners_data["runners"]:`: the reason is that the `gh api .../actions/runners` call returned JSON without the expected key `"runners"`
+  - script asks GitHub "is my runner online yet?" every 5 seconds while waiting. Do that check hundreds of times over many hours, and eventually GitHub either has a brief glitch answering one of those requests, or notices you're asking very often and briefly refuses to answer normally. Either way, that one answer comes back looking different than expected, missing the piece of information ("runners") your code assumed would always be there, and your code didn't know how to handle that unexpected shape, so it crashed instead of just trying again a few seconds later.
+- This crashed the *whole script*, not just one cell — a real gap beyond the original "no retry framework, bad cells are left for manual rerun" design intent, which was about not auto-retrying a genuinely failed cell, not about the entire unattended run dying on one flaky API response.
+- **Verified the checkpoint handled it correctly anyway**: the cell being processed when it crashed was confirmed absent from `checkpoint.json`, so resuming picked it up cleanly. Decided to accept this as a known, low-priority risk for now rather than add defensive handling (e.g. checking for the `"runners"` key before indexing) — noted as a possible future improvement, not applied this session.
+- Cleanup before resuming: stopped the orphaned container, checked/removed any old GitHub-side registration for that cell, reran. (commands see above)
+
+## 7. Incident 2 during the whole experiment run: WiFi outage caused a silently-wrong result
+
+- WiFi dropped mid-cell for `mvn_A3_B1d_B2b_C1b`. `gh run watch` failed with a connection error but didn't raise (`check=False`), so the script continued; `gh run download` also failed (no internet) and returned `None`; the evidence file was never downloaded.
+- Because nothing actually raised an exception, the cell completed its full path anyway — writing a **spurious `resolution_error` row** (caused by the network outage, not a real dependency-resolution outcome) and **permanently marking the cell done**, meaning it would never be retried automatically.
+- A *separate* cell right after it crashed on `get_registration_token`'s `check=True` (also because wifi is done) — that one was correctly left unmarked and resumed fine on its own.
+- **Manual fix applied**: removed `mvn_A3_B1d_B2b_C1b` from both `checkpoint.json`'s array and its row from `results.csv` by hand, so the next run would give it a legitimate attempt.
+
+
+## 8. Full 432-cell experiment run completed
+
+- Ran to completion (with the two incidents above handled via manual intervention and resume, not a single unbroken run).
+- Post-run integrity check: `results.csv` had 434 lines instead of the expected 433 (432 data rows + header). Investigated, found it was **one single harmless blank line** (line 360), left over from manually deleting the spurious `mvn_A3_B1d_B2b_C1b` row by hand in section 7. exactly 432 real data rows, matching the full matrix exactly, no duplicates, no missing cells. Deleted the blank line.
+- `results.csv` is now the complete, correct dataset for the full experiment matrix.
+
+## Next steps
+
+- [ ] Analyze the completed `results.csv` — classification counts, breakdown by A/B1/B2/C1, cross-check against expected-failure cells (`A2×B1a`, `A3×B1a`).
+- [ ] CLI (`--matrix`/`--run-all`/`--cell`/`--cells`) still not built — only ever needed the full-matrix path this session; revisit if Sub-RQ2 needs the `--cells` subset-rerun capability.
+- [ ] Consider (low priority): defensive handling for the `KeyError: 'runners'` case if it recurs, and/or a way to distinguish genuine `resolution_error` from a network-outage-caused one in future runs.
