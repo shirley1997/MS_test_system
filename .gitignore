@@ -53,3 +53,7 @@ maven_lockfile_example.json
 automation_process/central_automated_pipeline/checkpoint.json
 automation_process/central_automated_pipeline/artifact_download
 sub-RQ1_result
+automation_process/central_automated_pipeline/results_diff.csv
+automation_process/central_automated_pipeline/compare_results.py
+sub-RQ2_tool_selection
+automation_process/central_automated_pipeline/results.csv

@@ -2005,7 +2005,7 @@ mvn help:effective-settings
 - [ ] Only after all of the above passes: a small (~dozen-cell) pilot subset spanning all three ecosystems, then the full 432-cell official run.
 - [ ] CLI (`--matrix` / `--run-all` / `--cell` / `--cells`) still not built — deliberately deferred this session to focus on getting `run_one_cell`/`experiment_loop` correct first.
 
-# 23 - 25.08.2026 central automated pipeline: Ctrl+C fix applied, full 432-cell run completed
+# 23 - 25.08.2026, 28.08.2026 central automated pipeline: Ctrl+C fix applied, full 432-cell run completed
 
 **Stand: Applied the Ctrl+C/script interruption fix designed on 21-22.08, found and fixed one more bug while wiring it in. Learned several real-world lessons about self-hosted-runner infrastructure while stress-testing interrupts. Survived two uninteractive-run incidents (a GitHub API rate-limit incident, a WiFi outage) using the checkpoint/results.csv design. Committed and pushed the pipeline, then ran the full 432-cell experiment successfully. `results.csv` is complete (with 432 lines now).**
 
@@ -2074,8 +2074,119 @@ mvn help:effective-settings
 - Post-run integrity check: `results.csv` had 434 lines instead of the expected 433 (432 data rows + header). Investigated, found it was **one single harmless blank line** (line 360), left over from manually deleting the spurious `mvn_A3_B1d_B2b_C1b` row by hand in section 7. exactly 432 real data rows, matching the full matrix exactly, no duplicates, no missing cells. Deleted the blank line.
 - `results.csv` is now the complete, correct dataset for the full experiment matrix.
 
+## 9. Real finding: explained an `npm_A1a_B1b_B2a_C1a` `resolution_error` result
+
+- Checked the actual downloaded artifact/log for this cell instead of guessing — found a real `npm error code ETARGET: No matching version found for xueting-thesis-event-jianding@1.0.0`. Not a pipeline bug.
+- Explanation: `A1a×B1b` writes two `registry=` lines into `.npmrc` (private group URL, then real public `npmjs.org`). npm has no true fallback for unscoped packages — it just picks one. Here it looks like npm used the **public** line: on real public npm this package only exists at the malicious version `1.0.3` (the one published for the DCA experiment), never at `1.0.0` — and since this cell pins exactly `1.0.0` (`B2a`), npm found the name but not that version and errored out.
+- This looks like the empirical answer to the open question flagged back on 09-10.07.2026 (does npm's duplicate `registry=` use first-wins or last-wins?) — result suggests **last-wins**. Worth checking a couple more `B1b`/`B1c` cells to confirm the pattern holds, but this specific result is legitimate data, not something to fix.
+
+## 10. Started a second full experiment run — two more unattended-run crashes, both recovered cleanly
+
+- **Crash A**: `dispatch_cell`'s `gh workflow run` call failed with `CalledProcessError` (non-zero exit, transient GitHub API hiccup) — same general class as the `KeyError: 'runners'` crash from before, just a different call. Runner had registered fine but no job was ever dispatched to it, so it was just sitting there idle. Cleaned up the orphaned container + any stale GitHub registration, reran — `checkpoint.json` correctly did not contain the crashed cell, resumed cleanly.
+- **Crash B**: `invalidate_nexus_cache`'s `requests.post` to local Nexus (`http://localhost:8081`) failed with `ConnectionResetError [WinError 10054]` — this one wasn't GitHub at all, a local connection to my own Nexus container got reset. Checked `docker ps`: Nexus itself was still healthy (`Up 4 hours`, no crash/restart) — likely a transient connection blip from sustained load over many hours, not an outage. Since this crash happens right at the *start* of `run_one_cell` (before any runner/container work begins), there was nothing to clean up this time — confirmed no orphan container/runner existed, just reran directly.
+- **Pattern now confirmed across 3 separate incidents** (the earlier `KeyError`, plus these two): different root causes (GitHub API response shape, `gh` CLI transient failure, local Nexus connection reset), same underlying gap — any single network call failing anywhere in `run_one_cell` currently crashes the *entire* unattended run, not just that one cell. Decided **not** to patch each one individually as it comes up — instead planning one general fix (wrap the risky part of `run_one_cell` so an unexpected exception gets logged as a failed cell and the loop continues, instead of dying) before starting a third full run.
+
+## 11. Organizational decision: separate result folders per experiment run
+
+- Storing each experiment run's output under its own subfolder inside a `sub-RQ1_result` directory, rather than always overwriting the same `results.csv`/`checkpoint.json`/`artifact_download` in place — keeps each run's data separately reviewable/archivable given the run has had to be restarted multiple times already.
+
 ## Next steps
 
 - [ ] Analyze the completed `results.csv` — classification counts, breakdown by A/B1/B2/C1, cross-check against expected-failure cells (`A2×B1a`, `A3×B1a`).
 - [ ] CLI (`--matrix`/`--run-all`/`--cell`/`--cells`) still not built — only ever needed the full-matrix path this session; revisit if Sub-RQ2 needs the `--cells` subset-rerun capability.
 - [ ] Consider (low priority): defensive handling for the `KeyError: 'runners'` case if it recurs, and/or a way to distinguish genuine `resolution_error` from a network-outage-caused one in future runs.
+- [ ] Before a third full run: add general error handling around `run_one_cell`'s network calls, so any one transient failure (GitHub API, `gh` CLI, local Nexus) fails just that cell instead of crashing the whole unattended run — now hit 3 separate times with 3 different root causes.
+- [ ] Check a couple more `B1b`/`B1c` cells (any ecosystem) to confirm the npm duplicate-`registry=` last-wins finding from section 9 holds consistently.
+
+# 29.08.2026 Sub-RQ2 SCA tool selection: designed and refined the screening process, started Source B screening
+
+**Stand:**  refined the full tool-selection screening process for sub-RQ2 methodology, corrected a circular selection-gate flaw in the original section 5.4.1 design, ran the GitHub/GitLab searches, exported candidate tool metadata to CSV, and started manual screening. Found one tool via snowballing that the primary search could not surface.
+
+## 1. Designed the screening funnel (4 stages, 3 candidate sources)
+
+- Three candidate sources, reported separately:
+  - **Source A (literature)**: Syft, OpenSCA, OWASP Dependency-Check — from Ding et al. via Related Work. No DC-claim required; general-purpose SCA arm.
+  - **Source B (GitHub + GitLab search)**: tools whose name/description explicitly claims dependency confusion detection.
+  - **Source C (snowballing, added later today)**: tools found via guide/link-collection repos inside the Source B results.
+- Stages: Stage 1 screening (is it an SCA tool? drop PoCs/demos/writeups) -> Stage 2 build theoretical table (documentation review) -> Stage 3 hard-requirement filter (doc-verifiable) -> technical evaluation -> final 3 tools selected.
+
+## 2. Fixed a circularity flaw in the original methodology
+
+- Original 5.4.1 text: a tool producing no DC alert "will be removed from the candidate list" -> this would inflate recall by construction (selecting for success, then measuring success).
+- **Fix**: separated the gate from the measurement.
+  - Gate for entering the final 3 = **integration feasibility** only (installs, runs, produces parseable output against the actual services).
+  - Whether a tool actually detects DC = the measurement, never grounds for exclusion.
+- Applies identically to Source A and Source B; all Source needs to go through the hard-requirement filter. otherwise the further technical evaluation is meaningless.
+
+## 3. Defined 6 hard requirements (gate for final 3)
+
+1. Integrates into the per-service CI pipeline (can run against a specific experiment cell)
+2. Supports all 3 ecosystems (npm, pip, Maven) — matrix is 3 x n
+3. Reads this application's actual config/lock files — npm: package.json, package-lock.json, .npmrc; pip: pyproject.toml, pip.conf, pylock.toml; Maven: pom.xml, lockfile.json, pom.lockfile.xml (not changing the services to fit a tool)
+4. Produces machine-parseable output (JSON/SARIF) — needed for building the per-tool rule classifiers in central automated pipeline
+5. Free, no mandatory account/API key — matches the ephemeral, reproducible runner design
+6. Version can be pinned — consistent with every other pinned component / tools
+
+5 of 6 (all except #1) are answerable from documentation alone -> used as a Stage 3 filter before technical evaluation, to keep the expensive hands-on step (technical evaluation) small.
+
+## 4. Final-3 composition decision
+
+- **2 DC-specific tools + 1 general-purpose mainstream SCA tool.**
+- Rejected framing the third slot as a "negative control": a negative control must be known in advance to produce nothing, but whether general-purpose SCA tools detect DC is exactly the unknown sub-RQ2 investigates — calling it a control would presuppose the answer.
+- The general-purpose slot is a **tool category**, not fixed to the 3 Ding et al. tools -> if none passes the hard-requirement filter, a replacement is drawn from widely-adopted OSS SCA tools (exact source deferred; preference for an academic source, e.g. Imtiaz et al., if triggered).
+- Priority order when in conflict: (1) must fit the SCA tool definition (Foundations 3.4) > (2) hard requirements > (3) composition preference. research question wording will not be changed to fit tool availability.
+
+## 5. Source B: GitHub + GitLab search, star threshold decision
+
+- Checked GitHub topic `dependency-confusion`: only 38 repos -> too narrow, switched to full-text repo search.
+- GitHub query (after correcting a bug — `in:name,description` and `-language:Markdown` are no-ops, verified via API, do not use):
+  ```
+  "dependency confusion" fork:false archived:false pushed:>2024-01-01 stars:>=1
+  ```
+  -> **46 results** (2026-08-29). Phrase must be quoted — unquoted matches the two words separately and pulls in false hits (e.g. a repo about "Zero dependencies. Infinite confusion." unrelated to the attack).
+- Star threshold `>=1` chosen intentionally:  `>=1` just requires one person besides the author to have starred it. Distribution checked before picking: stars>=0 -> 134, >=1 -> 48 (unquoted)/46 (quoted), >=2 -> 28, >=5 -> 19, >=10 -> 11, >=50 -> 3. Threshold fixed BEFORE looking at which specific tools survive it.
+- GitLab: query `"dependency confusion"` (exact search) (Projects scope, archived excluded) -> 10 results. GitLab has some syntax options like exact search, but no qualifier syntax like GitHub's, so all results are screened by hand instead of pre-filtered.
+- `gh search repos` (the CLI's own flag-based search) does NOT reliably reproduce the web-UI query — tested, got 46 vs 43 vs other counts depending on flag combination. Do not use it for anything that needs to match a reported query string; use `gh api search/repositories` directly instead, since it takes the literal query string.
+
+## 6. Exported Source B candidates to CSV
+
+Command (in PowerShell; inner quotes need `\"` escaping for gh's raw-field flag):
+```powershell
+gh api -X GET search/repositories -f q='\"dependency confusion\" fork:false archived:false pushed:>2024-01-01 stars:>=1' -f per_page=100 --jq '([\"name\",\"url\",\"stars\",\"last_push\",\"license\",\"language\",\"description\"], (.items[] | [.full_name, .html_url, .stargazers_count, .pushed_at, (.license.spdx_id // \"none\"), (.language // \"\"), (.description // \"\")])) | @csv' | Out-File -Encoding utf8 dc_repos.csv
+```
+- Output: covers important information of each repo: `name, url, stars, last_push, license, language, description` for 46 repos, use CSV file as output file format.
+- Opened in Excel via Data -> From Text/CSV (UTF-8, comma delimiter) 
+- Saved as `.xlsx` for editing/screening (added extra columns: `source`, `drop reasons`, `found_via`). The original CSV (raw output of github api about repositories metadata) is kept untouched as the frozen/reproducible evidence file; the xlsx file is the working screening document and is never regenerated from a fresh export, which may silently update star counts/dates and break reproducibility of the reported numbers.
+
+## 7. Source C: added snowballing as a formal supplementary source
+
+- Discovered `synacktiv/DepFuzzer` (96 stars, actively maintained, MIT, Python) via a guide/link-collection repo (`BlackHatExploitation/dependency-confusion-exploitation-guide#scanning-tools` https://github.com/BlackHatExploitation/dependency-confusion-exploitation-guide#scanning-tools) that appeared inside the Source B results. (this link collection is not a detection tool so it will be dropped, but a tool is found inside this link collection repo)
+- Root cause it was missed by Source B: GitHub repo search indexes only name/description/topics, never the README — DepFuzzer's repo has an empty description and no topics at all, so no phrase search could ever find it, regardless of terminology.
+- Checked whether `in:readme` fixes this: yes, finds DepFuzzer, but expands the result set from 46 -> 608 repos — infeasible for manual screening in the available time.
+- **Decision**: keep the 46-result primary search as-is, add snowballing (backward reference search, citable to Wohlin 2014 "Guidelines for snowballing in systematic literature studies") as a named, documented supplementary source (Source C). Record source repo + date for each snowball find.
+- This is a important different blind spot from the earlier-documented "terminology-bound search" limitation (missed due to different wording) — this one is metadata-bound (missed due to empty description/topics, independent of terminology). Both now recorded as separate limitations.
+- Command to pull any single repo's metadata into the same CSV row format:
+  ```powershell
+  gh api repos/OWNER/REPO --jq '[.full_name, .html_url, .stargazers_count, .pushed_at, (.license.spdx_id // \"none\"), (.language // \"\"), (.description // \"\")] | @csv'
+  ```
+
+## 8. Started manual Stage 1 screening on the 46 + 10 + (Source C) candidates
+
+- Decided against any keyword-based pre-filter (e.g. excluding repos containing "poc"/"exploit"/"demo") — tested, and it would have wrongly dropped `snyk-labs/snync` (a real Snyk detection/mitigation tool whose description uses "mitigate" rather than any tested keyword). **Manual screening** with a recorded reason per repo stays fully auditable; a keyword filter is not, and risks silent false exclusions.
+- Screening principle: we need to determine this tool is actually an SCA tool. questions like: does the tool analyze a project's own dependency/manifest files, or does it just check whether package names are unclaimed on a public registry (bug-bounty recon pattern)? The latter fails the SCA-tool definition and/or the "reads our config files" hard requirement.
+- Concrete example dropped at Stage 3, not Stage 1, since it does pass the SCA-tool/detection-tool/ecosystem screen: `KingOfBugbounty/Dependency-Confusion-Hunter` — Chrome extension (can't run in the CI runner), npm/PyPI only (no Maven), reads live web pages/source maps rather than project config files, outputs via Discord webhook (not machine-parseable). Fails hard requirements 1, 2, 3, and 4.
+
+## Reference links collected today
+
+- GitHub CLI `gh search repos` manual: https://cli.github.com/manual/gh_search_repos
+- GitHub REST API - Search repositories: https://docs.github.com/en/rest/search/search?apiVersion=2026-03-10#search-repositories
+- GitHub CLI `gh api` manual: https://cli.github.com/manual/gh_api
+- dependency confusion guide repo used for snowballing: https://github.com/BlackHatExploitation/dependency-confusion-exploitation-guide#scanning-tools
+
+## Next steps
+
+- [ ] Finish Stage 1 screening of all Source B (46) + Source C candidates, screen the 10 GitLab results
+- [ ] Populate the theoretical evaluation table (14 columns) for everything that survives Stage 1, including Source A (Syft, OpenSCA, OWASP Dependency-Check — note: correct repo is `dependency-check/DependencyCheck`, the old `jeremylong/DependencyCheck` is archived)
+- [ ] Apply the Stage 3 doc-verifiable hard-requirement filter to produce the technical-evaluation shortlist
+- [ ] Redraw Figure 5.4 (simplified + detailed versions) to reflect the corrected non-circular gate and the 3-source funnel
+- [ ] Decide GitLab star/quality threshold if the 12 results turn out to need one (currently screening all 12 by hand, no threshold applied)
