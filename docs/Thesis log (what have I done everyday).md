@@ -2190,3 +2190,9 @@ gh api -X GET search/repositories -f q='\"dependency confusion\" fork:false arch
 - [ ] Apply the Stage 3 doc-verifiable hard-requirement filter to produce the technical-evaluation shortlist
 - [ ] Redraw Figure 5.4 (simplified + detailed versions) to reflect the corrected non-circular gate and the 3-source funnel
 - [ ] Decide GitLab star/quality threshold if the 12 results turn out to need one (currently screening all 12 by hand, no threshold applied)
+
+# 05.09.2026
+
+## Changed PIP_CONFIG_FILE's B1d fallback from empty string to /dev/null
+
+- `service-ci-python.yml`: in all three C1 steps (C1a, C1b, C1c), `PIP_CONFIG_FILE`'s B1d fallback changed from `''` to `/dev/null` — this is pip's own officially documented way to disable config loading. The empty string worked too (pilot-tested and confirmed equivalent on 14.08), but wasn't the documented method, so switched to the documented value directly.

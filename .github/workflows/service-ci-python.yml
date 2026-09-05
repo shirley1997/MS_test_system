@@ -131,7 +131,7 @@ jobs:
         working-directory: services/python
         continue-on-error: true
         env:
-            PIP_CONFIG_FILE: ${{ inputs.B1 != 'B1d' && format('{0}/services/python/pip.conf', github.workspace) || '' }}
+            PIP_CONFIG_FILE: ${{ inputs.B1 != 'B1d' && format('{0}/services/python/pip.conf', github.workspace) || '/dev/null' }}
         run: |
             if [ -f "${{ inputs.cell_id }}_invalid.txt" ]; then
               echo "skip: invalid A/B1 combination"
@@ -150,7 +150,7 @@ jobs:
         working-directory: services/python
         continue-on-error: true
         env:
-          PIP_CONFIG_FILE: ${{ inputs.B1 != 'B1d' && format('{0}/services/python/pip.conf', github.workspace) || '' }}
+          PIP_CONFIG_FILE: ${{ inputs.B1 != 'B1d' && format('{0}/services/python/pip.conf', github.workspace) || '/dev/null' }}
         run: |
           if [ -f "${{ inputs.cell_id }}_invalid.txt" ]; then
               echo "skip: invalid A/B1 combination"
@@ -196,7 +196,7 @@ jobs:
         working-directory: services/python
         continue-on-error: true
         env:
-          PIP_CONFIG_FILE: ${{ inputs.B1 != 'B1d' && format('{0}/services/python/pip.conf', github.workspace) || '' }}
+          PIP_CONFIG_FILE: ${{ inputs.B1 != 'B1d' && format('{0}/services/python/pip.conf', github.workspace) || '/dev/null' }}
         run: |
           if [ -f "${{ inputs.cell_id }}_invalid.txt" ]; then
               echo "skip: invalid A/B1 combination"
