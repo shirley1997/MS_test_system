@@ -2196,3 +2196,30 @@ gh api -X GET search/repositories -f q='\"dependency confusion\" fork:false arch
 ## Changed PIP_CONFIG_FILE's B1d fallback from empty string to /dev/null
 
 - `service-ci-python.yml`: in all three C1 steps (C1a, C1b, C1c), `PIP_CONFIG_FILE`'s B1d fallback changed from `''` to `/dev/null` — this is pip's own officially documented way to disable config loading. The empty string worked too (pilot-tested and confirmed equivalent on 14.08), but wasn't the documented method, so switched to the documented value directly.
+
+# 06.09.2026
+
+## Removed redundant dependency:tree command from Java C1a/C1b, found a real confound in the process
+
+### The problem
+- Java's C1a and C1b (phase 2) ran two separate Maven commands per cell: `mvn dependency:tree` (writes dependency-tree.json: name+version+tree shape only) followed by `mvn maven-lockfile:generate` (writes lockfile.json: name+version+checksum+resolved URL+repositoryId).
+- Checked the maven-lockfile plugin's own source (GenerateLockFileMojo.java) and its paper (arXiv:2510.00730): generate performs its own full dependency resolution (`@Mojo(requiresDependencyResolution=..., requiresOnline=true)`), completely independent of dependency:tree.
+- This means every C1a/C1b cell was resolving dependencies twice against the network, and dependency-tree.json's content is a strict subset of what lockfile.json already provides.
+- Worse: since both commands ran in the same step, same container, same cell, with no cache clear between them, dependency:tree populated ~/.m2 moments before generate ran for that same cell — meaning generate's resolution was never actually observed from a clean cache within that cell. This is a different confound from the one found on 09.08 (a persistent, cross-cell pilot container reusing artifacts from an earlier, different cell — solved by ephemeral per-cell containers). This new one is within one cell, and ephemeral containers do not solve it, since both commands share the same container instance for that one cell.
+- Checked: `mvn -X` (verbose mode) is the only built-in way to see a resolved URL at all, and it's unstructured log text that doesn't even print for already-cached artifacts — confirming there is no built-in Maven alternative that gives structured name+version+URL, which is why the third-party plugin was needed in the first place.
+
+### Design decisions
+1. Remove dependency:tree entirely from C1a and C1b — rely solely on maven-lockfile:generate for both resolution and evidence. (C1c never used dependency:tree, unaffected.)
+2. C1b's phase 1 (setup) now uses maven-lockfile:generate too instead of dependency:tree, producing `<cell_id>_setup-lockfile.json` (renamed from `<cell_id>_setup-dependency-tree.json`); the phase-2-gating sanity check now tests for this file's existence instead.
+3. `-U` (force metadata re-check) — confirmed via Maven's own CLI reference (https://maven.apache.org/ref/current/maven-embedder/cli.html) that this is a core Maven flag, not plugin-specific, so it applies the same way regardless of which goal is running. Moved from the now-removed dependency:tree call onto generate directly in C1b's phase 2, so the "force fresh check" behavior isn't silently lost.
+4. Added `2>&1 | tee` (into `_mvn_log.txt` / `_mvn_setup_log.txt`) directly onto the generate calls — previously only dependency:tree's output was captured to log files; generate itself was never logged at all.
+5. Updated the artifact upload list: removed `<cell_id>_dependency-tree.json` and `<cell_id>_setup-dependency-tree.json` (files that no longer get produced), added `<cell_id>_setup-lockfile.json`.
+
+### Where this gets documented in the thesis
+- Implementation chapter (6.4.5.3): the full "why removed" story — implementation-only content, same treatment as other empirical findings already documented there.
+- Results chapter: only if a planned re-run (the 3. time main experiment run) (comparing the old double-resolution data/result against a clean single-resolution re-run) shows an actual difference in classification outcomes or evidence completeness. Not decided yet — pending that comparison.
+
+### Next steps
+- [ ] Re-run the full 432-cell experiment tonight with the corrected pipeline (third run).
+- [ ] Compare classification outcomes + evidence completeness (resolved/repositoryId fields) between this run and the original two runs.
+- [ ] Decide, based on that comparison, whether this needs to also appear in the Results/Limitations chapters.

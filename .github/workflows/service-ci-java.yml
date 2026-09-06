@@ -47,8 +47,8 @@ jobs:
           rm -f pom.xml pom_cell.xml
           rm -rf target
           rm -f ${{ inputs.cell_id }}_*.txt ${{ inputs.cell_id }}_*.json
-          rm -rf ~/.m2/repository || true
-          echo "workspace cleaned (internal packages cleaned from ~/.m2, plugins + public dependencies kept)"
+          rm -rf $HOME/.m2/repository || true
+          echo "workspace cleaned (internal packages cleaned from $HOME/.m2, plugins + public dependencies kept)"
 
       # 2. Echo the cell inputs so the workflow log shows which cell ran.
       - name: Echo cell inputs
@@ -94,12 +94,13 @@ jobs:
 
      # 4. Apply variable C1 (CI operation type)
 
-      # C1a: initial resolve 
-      #      dependency:tree walks the transitive graph and downloads only POMs (small XML),
-      # will not download the JARs -> fast, no build/install. Output:
-      # - "${cell_id}_dependency-tree.json" -> structured tree (name + version, JSON since plugin 3.7.0)
-      # - "${cell_id}_mvn_log.txt" -> "Downloading from <repoId>: <URL>" lines
-      # - "${cell_id}_lockfile.json.txt" -> file for classification! very important. contains package's name, version, resolved URL
+      # C1a: initial resolve
+      #      maven-lockfile:generate resolves the project's dependencies (include transitive) and produces a lockfile in one command. 
+      # Output:
+      # "${cell_id}_mvn_log.txt" -> full console output, incl. "Downloading from <repoId>: <URL>" lines
+      # "${cell_id}_lockfile.json" -> file for classification! contains package's name, version, resolved URL
+      # (earlier also ran maven-dependency-plugin:tree here. This command is removed 06.09.2026 - it duplicated the
+      # resolution generate already performs, back-to-back with no cache clear in between. See thesis log 06.09.2026.)
       - name: Apply CI pipeline operation (C1a - initial install) and run resolution command
         if: inputs.C1 == 'C1a'
         working-directory: services/java
@@ -110,22 +111,24 @@ jobs:
             echo "[C1a] skipping: no pom.xml (invalid A/B1/B2 combination)."
             exit 0
           fi
- 
-          mvn -B org.apache.maven.plugins:maven-dependency-plugin:3.11.0:tree \
-            -DoutputFile="${{ inputs.cell_id }}_dependency-tree.json" \
-            -DoutputType=json \
-            2>&1 | tee "${{ inputs.cell_id }}_mvn_log.txt" || true
 
-          mvn -B io.github.chains-project:maven-lockfile:5.17.3:generate -DlockfileName="${{ inputs.cell_id }}_lockfile.json" -DincludeMavenPlugins=false || true
+          mvn -B io.github.chains-project:maven-lockfile:5.17.3:generate \
+            -DlockfileName="${{ inputs.cell_id }}_lockfile.json" \
+            -DincludeMavenPlugins=false \
+            2>&1 | tee "${{ inputs.cell_id }}_mvn_log.txt" || true
 
           
  
-      # C1b (package update): 2-phase (setup + update)
-      #   Phase 1 (setup, REAL resolve of pinned 1.0.0): swap pom.xml -> fixed_pom.xml (pinned <version>1.0.0</version>),
-      # run dependency:tree -> populates ~/.m2 with 1.0.0 POMs (and metadata).
-      #   Phase 2 (update, resolve with cell's B2 specifier): restore cell pom.xml,
-      # run dependency:tree with -U to force metadata re-check against remotes.
-      # run maven-lockfile:generate again to generate lockfile after package update (used for result classification)
+      # C1b (package update): 2-phase (setup + update) -> consistent design structure across all three ecosystems
+      #   Phase 1 (setup phase, initial resolve of pinned 1.0.0): swap pom.xml -> fixed_pom.xml (contains pinned <version>1.0.0</version>),
+      # run maven-lockfile:generate and records the lockfile and command output as setup evidence).
+      #   Phase 2 (update phase, resolve based on real A, B1, B2 configuration): restore cell pom.xml,
+      # run maven-lockfile:generate with -U to force metadata re-check against remotes.
+      # (Previously used maven-dependency-plugin:tree for phases 1&2, 
+      # maven-lockfile:generate command only added at the end of phase 2. removed the dependency:tree command at 06.09.2026, as it is redundant second
+      # resolution, see thesis log 06.09.2026. -U is used for maven-lockfile:generate
+      # confirmed via Maven's own CLI reference that -U is a core flag, can be used to force maven to check refreshed metadata
+      # https://maven.apache.org/ref/current/maven-embedder/cli.html
       - name: Apply CI pipeline operation (C1b - package update) and run update command
         if: inputs.C1 == 'C1b'
         working-directory: services/java
@@ -136,42 +139,41 @@ jobs:
             echo "[C1b] skipping: no pom.xml (invalid A/B1/B2 combination)."
             exit 0
           fi
- 
-          #Phase 1: setup (resolve internal package (with version 1.0.0) 
+
+          #Phase 1: setup (resolve internal package (with version 1.0.0)
           mv pom.xml pom_cell.xml
           cp "${{ github.workspace }}/fixed_setup_file/fixed_pom.xml" pom.xml
- 
-          mvn -B org.apache.maven.plugins:maven-dependency-plugin:3.11.0:tree \
-            -DoutputFile="${{ inputs.cell_id }}_setup-dependency-tree.json" \
-            -DoutputType=json \
+
+          mvn -B io.github.chains-project:maven-lockfile:5.17.3:generate \
+            -DlockfileName="${{ inputs.cell_id }}_setup-lockfile.json" \
+            -DincludeMavenPlugins=false \
             2>&1 | tee "${{ inputs.cell_id }}_mvn_setup_log.txt" || true
- 
+
           # Sanity check: if initial resolve failed, update phase is meaningless.
-          if [ ! -s "${{ inputs.cell_id }}_setup-dependency-tree.json" ]; then
-            echo "[C1b] setup phase: initial resolve failed, no dependency tree produced. skip update phase." \
+          if [ ! -s "${{ inputs.cell_id }}_setup-lockfile.json" ]; then
+            echo "[C1b] setup phase: initial resolve failed, no lockfile produced. skip update phase." \
               | tee "${{ inputs.cell_id }}_mvn_log.txt"
-            
+
             exit 0
           fi
- 
-          # Restore the cell's actual pom.xml for phase 2
+
+          # Restore the cell's actual pom.xml (contains real input configurations) for phase 2
           mv pom_cell.xml pom.xml
-          echo "[C1b] internal packages successfully resolved into ~/.m2. now running update resolve."
- 
-          #Phase 2: update (resolve with cell's B2 specifier, -U forces metadata re-check) ----
-          mvn -B -U org.apache.maven.plugins:maven-dependency-plugin:3.11.0:tree \
-            -DoutputFile="${{ inputs.cell_id }}_dependency-tree.json" \
-            -DoutputType=json \
+          echo "[C1b] internal packages successfully resolved. now enter phase 2: package update."
+
+          # Phase 2: package update (resolve with cell's B2 specifier, -U forces metadata re-check) ----
+          mvn -B -U io.github.chains-project:maven-lockfile:5.17.3:generate \
+            -DlockfileName="${{ inputs.cell_id }}_lockfile.json" \
+            -DincludeMavenPlugins=false \
             2>&1 | tee "${{ inputs.cell_id }}_mvn_log.txt" || true
-          
-          mvn -B io.github.chains-project:maven-lockfile:5.17.3:generate -DlockfileName="${{ inputs.cell_id }}_lockfile.json" -DincludeMavenPlugins=false || true
 
  
       # C1c: rebuild with lockfile 
       # update 08.08.2026: maven doesn't have native lockfile, but third party has proposed a maven-lockfile plugin
-      # 2 phases:
-        # phase 1: use the cell's inputs, pom.xml to generate the lockfile using goal "generate"
-        # phase 2:
+      # 3 phases:
+        # phase 1: use the cell's inputs, pom.xml to do initial reolution and generate the lockfile using goal "generate"
+        # phase 2: use the goal "freeze" to generate a file pom.lockfile.xml, pin version of direct + transitive depedencies
+        # phase 3: rebuild with maven-lockfile (actually based on the file pom.lockfile.xml)
       - name: Apply CI pipeline operation (C1c) 
         if: inputs.C1 == 'C1c'
         working-directory: services/java
@@ -182,46 +184,46 @@ jobs:
             exit 0
           fi
           
-          LOCKFILE="${{ inputs.cell_id }}_lockfile.json"
+          LOCKFILE="${{ inputs.cell_id }}_lockfile.json"          
           FROZEN_POM="${{ inputs.cell_id }}_pom.lockfile.xml"
-          LOGFILE="${{ inputs.cell_id }}_mvn_lockfile_log.txt"
+          CONSOLE_LOG_FILE="${{ inputs.cell_id }}_mvn_lockfile_log.txt"
           REBUILD_LOCKFILE="${{ inputs.cell_id }}_rebuild-lockfile.json"
 
           # 1. Setup: generate lockfile.json from the cell's actual resolution (A/B1/B2 config).
           mvn -B io.github.chains-project:maven-lockfile:5.17.3:generate \
             -DlockfileName="$LOCKFILE" \
             -DincludeMavenPlugins=false \
-            2>&1 | tee "$LOGFILE" || true
+            2>&1 | tee "$CONSOLE_LOG_FILE" || true
 
           if [ ! -s "$LOCKFILE" ]; then
             echo "[C1c] phase 1: no lockfile.json is produced (resolution error happens). skip rebuild with lockfile phase." \
-              | tee -a "$LOGFILE"
+              | tee -a "$CONSOLE_LOG_FILE"
             exit 0
           fi
 
-          # 2. Freeze: pins every dependency to the lockfile's recorded version into a new POM
-          #    (pure in-memory transform, no resolution of its own).
+          # 2. Freeze: pins every dependency (direct + transitive) to the lockfile's recorded version into a new POM
+          # (the goal "freeze" doesn't do dependency resolution).
           mvn -B io.github.chains-project:maven-lockfile:5.17.3:freeze \
             -DlockfileName="$LOCKFILE" \
             -DpomLockfileOutput="$FROZEN_POM" \
-            2>&1 | tee -a "$LOGFILE" || true
+            2>&1 | tee -a "$CONSOLE_LOG_FILE" || true
 
           # 3. Rebuild: a second, independent resolution against the frozen (pinned) POM.
-          #    This is the actual "rebuild with lockfile" evidence -- one file with
-          #    name + version + resolved URL + checksum, directly comparable to the setup lockfile.
+          # This is the actual "rebuild with lockfile" evidence, one file with
+          # name + version + resolved URL + checksum, directly comparable to the setup lockfile.
           if [ -f "$FROZEN_POM" ]; then
             mvn -B io.github.chains-project:maven-lockfile:5.17.3:generate \
               -f "$FROZEN_POM" \
               -DlockfileName="$REBUILD_LOCKFILE" \
               -DincludeMavenPlugins=false \
-              2>&1 | tee -a "$LOGFILE" || true
+              2>&1 | tee -a "$CONSOLE_LOG_FILE" || true
           else
-            echo "[C1c] freeze phase failed: no pom.lockfile.xml produced." | tee -a "$LOGFILE"
+            echo "[C1c] freeze phase failed: no pom.lockfile.xml produced." | tee -a "$CONSOLE_LOG_FILE"
           fi
 
 
  
-      # 6. Upload the resolution output (log + dependency tree + pom + invalid marker).
+      # 6. Upload the resolution output (log + lockfile(s) + pom + invalid marker).
       #    The central automated pipeline will download and classify it, and write one row to results.csv.
      
       - name: Upload raw resolution output of maven 
@@ -232,8 +234,7 @@ jobs:
             services/java/pom.xml
             services/java/${{ inputs.cell_id }}_mvn_log.txt
             services/java/${{ inputs.cell_id }}_mvn_setup_log.txt
-            services/java/${{ inputs.cell_id }}_dependency-tree.json
-            services/java/${{ inputs.cell_id }}_setup-dependency-tree.json
+            services/java/${{ inputs.cell_id }}_setup-lockfile.json
             services/java/${{ inputs.cell_id }}_invalid.txt
             services/java/${{ inputs.cell_id }}_lockfile.json
             services/java/${{ inputs.cell_id }}_pom.lockfile.xml
