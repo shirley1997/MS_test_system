@@ -33,6 +33,7 @@ internal_packages = {
     "java": ["xueting-thesis-event-juhe", "xueting-thesis-result-fanhui"],
 }   # a dict
 nexus_url = "http://localhost:8081"
+
 proxy_repo = {
     "nodejs": "npm-public-proxy",
     "python": "pypi-public-proxy",
@@ -43,6 +44,13 @@ group_repo = {"nodejs": {"A1a": "npm-group-public-first", "A1b": "npm-group-priv
               "python": {"A1a": "pypi-group-public-first", "A1b": "pypi-group-private-first"}, 
               "java": {"A1a": "maven-group-public-first", "A1b": "maven-group-private-first"}
               }
+
+internal_hosted_repo = {
+    "nodejs": "npm-internal-hosted",
+    "python": "pypi-internal-hosted",
+    "java": "maven-internal-hosted"
+}
+
 
 dotenv.load_dotenv()
 nexus_username = os.environ.get("nexus_username")
@@ -234,28 +242,44 @@ def read_java_evidence(java_cell, base_dir) -> list[dict]:
     return mvn_package_found
     
 # package_evidence is the list[dict] (or None) which is the return value from the 3 functions above
-def is_from_nexus(url) -> bool:
+
+# check resolved package URL to get the repository origin
+def get_repo_origin(ecosystem, url) -> str:
     if url == None:
-        return False
-    return "8081" in url   # Nexus's fixed port, regardless of whether the host is localhost or host.docker.internal
+        return "external"
+    if internal_hosted_repo[ecosystem] in url:
+        return "hosted"
+    if group_repo[ecosystem]["A1a"] in url or group_repo[ecosystem]["A1b"] in url:
+        return "group"
+    if proxy_repo[ecosystem] in url:
+        return "proxy"
+    return "external"
 
-
+# update classify_logic at 07.09: now both private / malicious package result classify based on version + name + resolved URL
 def classify_logic(ecosystem, package_evidence) -> str:
-    
+
     if package_evidence == None:
         return "resolution_error"
+
+    # the malicious classification method decides if the resolved URL is not internal hosted repo
+    # AND resolved version is 1.0.3, then "malicious_resolved"
+    # cause malicious packages can also be resolved from group /proxy repo or direct from public repo
+    malicious_count = 0
     for evidence in package_evidence:
-        if evidence["version"] in malicious_version:
-            return "malicious_resolved"
+        origin = get_repo_origin(ecosystem, evidence["url"])
+        if evidence["version"] in malicious_version and origin != "hosted":
+            malicious_count += 1
+    if malicious_count > 0:
+        return "malicious_resolved"
 
     expected_count = len(internal_packages[ecosystem])
-    count_in_evidence = 0
+    private_count = 0
     for evidence in package_evidence:
-        if evidence["version"] in internal_version and is_from_nexus(evidence["url"]):
-            count_in_evidence += 1
-    if count_in_evidence == expected_count:
-            return "private_resolved"
-        
+        origin = get_repo_origin(ecosystem, evidence["url"])
+        if evidence["version"] in internal_version and (origin == "hosted" or origin == "group"):
+            private_count += 1
+    if private_count == expected_count:
+        return "private_resolved"
 
     return "resolution_error"
 
@@ -467,60 +491,72 @@ def run_one_cell(cell, owner, repo, repo_url, image_tag, checkpoint_path, result
         mark_cell_as_finish(checkpoint_path, cell["cell_id"])
         return
 
-    # discard nexus cache
-    invalidate_nexus_cache(cell["ecosystem"], cell["A - private registry configuration"])
 
-    # obtain a registration token, start runner container, check if runner is online
-    token = get_registration_token(owner, repo)
-    print("registration token obtained:", token)   
+    try:
+        # discard nexus cache
+        invalidate_nexus_cache(cell["ecosystem"], cell["A - private registry configuration"])
 
-    container_id = start_runner_container(cell["cell_id"], token, repo_url, image_tag)
-    print("runner container just created:", container_id)
+        # obtain a registration token, start runner container, check if runner is online
+        token = get_registration_token(owner, repo)
+        print("registration token obtained:", token)   
 
-    runner_online = wait_for_runner_online(owner, repo, f"thesis-runner-{cell["cell_id"]}", timeout_s=60, check_interval_s=5)
-    print("is the new created runner online now?:", runner_online)   # should be True within a few seconds
+        container_id = start_runner_container(cell["cell_id"], token, repo_url, image_tag)
+        print("runner container just created:", container_id)
 
-    if stop_requested:
-        return
-    
-    # add error handling logic when runner never went online after defined time limit
-    # if never online then this cell is "runner_offline_error" in result file, continue with next cell
-    if runner_online == False:
-        print(f"runner is not online for cell {cell['cell_id']} after time limit, marking as runner_offline_error")
-        runner_error_row = build_result_row(cell, "runner_offline_error", None, None, dest_dir=None, git_commit=get_git_commit())
-        write_result_file(result_file_path, runner_error_row)
+        runner_online = wait_for_runner_online(owner, repo, f"thesis-runner-{cell["cell_id"]}", timeout_s=60, check_interval_s=5)
+        print("is the new created runner online now?:", runner_online)   # should be True within a few seconds
+
+        if stop_requested:
+            return
+        
+        # add error handling logic when runner never went online after defined time limit
+        # if never online then this cell is "runner_offline_error" in result file, continue with next cell
+        if runner_online == False:
+            print(f"runner is not online for cell {cell['cell_id']} after time limit, marking as runner_offline_error")
+            runner_error_row = build_result_row(cell, "runner_offline_error", None, None, dest_dir=None, git_commit=get_git_commit())
+            write_result_file(result_file_path, runner_error_row)
+            mark_cell_as_finish(checkpoint_path, cell["cell_id"])
+            return
+
+        # runner successfully registered, container started -> dispatch job of service pipeline, document workflow run id
+        dispatch_cell(owner, repo, cell["ecosystem"], cell)
+        run_id = find_run_id(owner, repo, service_pipeline_file[cell["ecosystem"]], cell["cell_id"])
+        print("run_id of the workflow:", run_id)
+
+        # observe workflow log and wait for workflow to finish
+        wait_for_run_complete(owner, repo, run_id)
+        if stop_requested:
+            return
+
+        # download the artifacts produced by service pipeline, do classification
+        dest_dir = f"automation_process/central_automated_pipeline/artifact_download/{cell["cell_id"]}"
+        artifact_name = f"{cell["cell_id"]}_{artifact_name_suffix[cell["ecosystem"]]}"
+        result = download_artifact(owner, repo, run_id, artifact_name, dest_dir)
+        print("download artifact produced by service pipeline:", result)
+
+        if (cell["ecosystem"] == "nodejs"):
+            package_evidence = read_npm_evidence(f"{dest_dir}/package-lock.json")
+        elif (cell["ecosystem"] == "python"):
+            package_evidence = read_pip_evidence(f"{dest_dir}/{cell['cell_id']}_install-report.json")
+        elif (cell["ecosystem"] == "java"):
+            package_evidence = read_java_evidence(cell, base_dir = dest_dir)
+        classification = classify_logic(cell["ecosystem"], package_evidence)
+
+        # make a result row, add to result file, mark this cell as complete
+        row_to_append = build_result_row(cell, classification, package_evidence, run_id, dest_dir, get_git_commit())
+
+        write_result_file(result_file_path, row_to_append)
         mark_cell_as_finish(checkpoint_path, cell["cell_id"])
+
+# wrap the whole run_one_cell method in try/catch. 
+# when a cell crashes because of rate limit or strange errors of API network call, document it and skip it
+# and rerun these crashed cells after all other valid cells finish
+# this is a better approach than people have to keep noticing if the script crashes and need to rerun script manually to continue experiment
+    except Exception as e:
+        with open("automation_process/central_automated_pipeline/crashed_cells.txt", "a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now()}: {cell['cell_id']} - {e}\n")
         return
 
-    # runner successfully registered, container started -> dispatch job of service pipeline, document workflow run id
-    dispatch_cell(owner, repo, cell["ecosystem"], cell)
-    run_id = find_run_id(owner, repo, service_pipeline_file[cell["ecosystem"]], cell["cell_id"])
-    print("run_id of the workflow:", run_id)
-
-    # observe workflow log and wait for workflow to finish
-    wait_for_run_complete(owner, repo, run_id)
-    if stop_requested:
-        return
-
-    # download the artifacts produced by service pipeline, do classification
-    dest_dir = f"automation_process/central_automated_pipeline/artifact_download/{cell["cell_id"]}"
-    artifact_name = f"{cell["cell_id"]}_{artifact_name_suffix[cell["ecosystem"]]}"
-    result = download_artifact(owner, repo, run_id, artifact_name, dest_dir)
-    print("download artifact produced by service pipeline:", result)
-
-    if (cell["ecosystem"] == "nodejs"):
-        package_evidence = read_npm_evidence(f"{dest_dir}/package-lock.json")
-    elif (cell["ecosystem"] == "python"):
-        package_evidence = read_pip_evidence(f"{dest_dir}/{cell['cell_id']}_install-report.json")
-    elif (cell["ecosystem"] == "java"):
-        package_evidence = read_java_evidence(cell, base_dir = dest_dir)
-    classification = classify_logic(cell["ecosystem"], package_evidence)
-
-    # make a result row, add to result file, mark this cell as complete
-    row_to_append = build_result_row(cell, classification, package_evidence, run_id, dest_dir, get_git_commit())
-
-    write_result_file(result_file_path, row_to_append)
-    mark_cell_as_finish(checkpoint_path, cell["cell_id"])
 
 
 # after the whole main experiment finishes, copy the previously identified invalid combinations to the result.csv file
@@ -538,8 +574,19 @@ def experiment_loop(matrix_rows, owner, repo, repo_url, image_tag, checkpoint_pa
             break
         if is_finished(cell["cell_id"], finished_cells) == False:
             run_one_cell(cell, owner, repo, repo_url, image_tag, checkpoint_path, result_file_path)
-    copy_invalid_rows(matrix_rows, result_file_path)
+    #copy_invalid_rows(matrix_rows, result_file_path)
 
+    # change of plan: first finish running all valid cells (including finish running crushed cells in subsequent run)
+    # then check if all valid cell ID is already in checkpoint.json
+    # only all valid cells run successfully, then append invalid rows to results.csv
+    finished_cells = load_finished_cells(checkpoint_path)   # reload checkpoint.json, it changed while the loop ran
+    all_valid_done = True
+    for cell in matrix_rows:
+        if cell["valid?"] == True and cell["cell_id"] not in finished_cells:
+            all_valid_done = False
+
+    if all_valid_done == True:
+        copy_invalid_rows(matrix_rows, result_file_path)
 
 
 if __name__ == "__main__":

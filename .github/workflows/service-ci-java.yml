@@ -48,7 +48,7 @@ jobs:
           rm -rf target
           rm -f ${{ inputs.cell_id }}_*.txt ${{ inputs.cell_id }}_*.json
           rm -rf $HOME/.m2/repository || true
-          echo "workspace cleaned (internal packages cleaned from $HOME/.m2, plugins + public dependencies kept)"
+          echo "workspace cleaned, cache removed"
 
       # 2. Echo the cell inputs so the workflow log shows which cell ran.
       - name: Echo cell inputs
@@ -154,6 +154,10 @@ jobs:
             echo "[C1b] setup phase: initial resolve failed, no lockfile produced. skip update phase." \
               | tee "${{ inputs.cell_id }}_mvn_log.txt"
 
+
+            # restore the cell's real pom.xml so the uploaded artifact shows this cell's actual
+            # A/B1/B2 configuration, not the fixed setup pom 
+            mv pom_cell.xml pom.xml
             exit 0
           fi
 

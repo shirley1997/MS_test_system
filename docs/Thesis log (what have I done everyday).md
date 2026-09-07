@@ -2223,3 +2223,102 @@ gh api -X GET search/repositories -f q='\"dependency confusion\" fork:false arch
 - [ ] Re-run the full 432-cell experiment tonight with the corrected pipeline (third run).
 - [ ] Compare classification outcomes + evidence completeness (resolved/repositoryId fields) between this run and the original two runs.
 - [ ] Decide, based on that comparison, whether this needs to also appear in the Results/Limitations chapters.
+
+# 07.09.2026
+
+**Stand: Before starting the 3. full experiment run, reworked the classification logic in `central_automated_pipeline.py` so it no longer depends on the Nexus port number, added general crash handling so one flaky network call can no longer kill an entire unattended run, and fixed a small evidence bug in `service-ci-java.yml`'s C1b failure path.**
+
+## 1. Rewrote the classification logic: repository names instead of the port number
+
+### The problem (why reconsider is needed)
+- The old helper `is_from_nexus(url)` decided "did this come from Nexus?" by checking whether the string `"8081"` appeared in the resolved URL.
+- Two things wrong with that:
+  - **Fragile**: the whole classification depends on a port number. If I ever change the Nexus port, every cell silently reclassifies and I would not notice.
+  - **Throws away information**: it collapsed all four repository types into one yes/no. But "came from Nexus" is not the interesting question — *which* Nexus repository served it is.
+
+### What I changed
+- Replaced `is_from_nexus(url)` with `get_repo_origin(ecosystem, url)`, which matches the actual **repository name** inside the URL and returns one of four origins:
+  - `hosted` -> `*-internal-hosted` (my own internal repository)
+  - `group` -> `*-group-public-first` / `*-group-private-first`
+  - `proxy` -> `*-public-proxy` (public registry, reached through Nexus)
+  - `external` -> anything else, including `url is None` (public registry reached directly, bypassing Nexus)
+- Added an `internal_hosted_repo` dict next to the existing `group_repo` / `proxy_repo` dicts, so all repository names live in one place and the classifier reads them from there instead of hard-coding anything.
+- `classify_logic` now uses **package name + version + resolved URL together**:
+  1. evidence file missing/unreadable -> `resolution_error`
+  2. any package with version in `malicious_version` and origin not `hosted` -> `malicious_resolved` (checked first, with priority)
+  3. all internal packages with version in `internal_version` and origin `hosted` or `group` -> `private_resolved`
+  4. otherwise -> `resolution_error`
+
+### Design decisions and why
+
+- **Why `group` still counts as `private_resolved`, even though a group URL is ambiguous.**
+  - A group repo URL genuinely cannot tell me which member served the artifact — that is what a group repo *is*. So the URL alone is not enough.
+  - It is the **version** that disambiguates it, not the URL.
+  - I checked this against the real run-2 data instead of just assuming it, and the numbers make the point better than any argument:
+    - the group repo served internal `1.0.0` **110 times** and attacker `1.0.3` **60 times**, from the same URL prefix -> **URL alone cannot decide origin**
+    - internal `1.0.0` arrived via `hosted` **42 times** and via `group` **110 times** -> **version alone cannot decide path**
+    - `1.0.3` never once came from `hosted`; `1.0.0`/`1.0.2` never once came from `proxy` or `external`
+  - So neither field is sufficient on its own, and together they resolve every cell in the matrix unambiguously. This is exactly the empirical justification for why I went to the trouble of obtaining a lockfile with resolved URLs for all three ecosystems — without the URL I would have had no way to show this.
+
+- **Why I added `origin != "hosted"` to the malicious rule (this overrides my 21-22.08 decision).**
+  - On 21-22.08 I wrote that `malicious_resolved` should stay version-only, because a malicious package can arrive either through the Nexus proxy **or** straight from the public registry, and requiring "must come from Nexus" would wrongly exclude the second case (the confirmed `A3 x B1a x B2b x C1c` Maven cell that resolved `1.0.3` directly from `repo.maven.apache.org`).
+  - That reasoning still holds and is **not** violated: the new guard does not exclude `external` or `proxy`. It only excludes `hosted`.
+  - Why excluding `hosted` is safe: `maven-internal-hosted` / `npm-internal-hosted` / `pypi-internal-hosted` are my own repositories, and I never uploaded version `1.0.3` to any of them. A `1.0.3` from `hosted` is impossible by construction.
+  - In run 2 the guard fired **0 times** across 540 evidence entries, so it changes nothing empirically — it only makes the rule use all three signals consistently.
+
+- **Why I do not use `repositoryId`, and why not checksums.**
+  - `repositoryId` is unreliable: because of the `id=central` override in `generate_pom_xml.py`, internally hosted Maven artifacts report `repositoryId = "central"`. Already documented earlier, still true.
+  - Checksums verify **integrity**, not **origin**. The attacker's `1.0.3` has a perfectly valid hash of itself. A hash proves the file was not altered in transit; it cannot tell me whether the coordinate was satisfied internally or externally. Only the resolved URL carries that.
+
+
+
+## 2. Added crash handling so one flaky call cannot kill the whole run
+
+### The problem: three crashes, three different causes, one shared gap
+During experiment runs 1 and 2 the script died completely three separate times:
+- **`KeyError: 'runners'`** in `wait_for_runner_online` — the `gh api .../actions/runners` response came back without the `"runners"` key (GitHub glitch, or a soft rate-limit response). This check runs every 5 seconds for hours, so sooner or later one response has an unexpected shape.
+- **`CalledProcessError`** in `dispatch_cell`'s `gh workflow run` — a transient GitHub API hiccup. The runner had registered fine, but no job was ever dispatched to it.
+- **`ConnectionResetError [WinError 10054]`** in `invalidate_nexus_cache`'s `requests.post` — not GitHub at all, but my **local** Nexus. `docker ps` showed Nexus itself was healthy and never restarted, so this was a transient connection blip under sustained load.
+
+The three root causes are unrelated, but the gap is the same: **any single network call failing anywhere in `run_one_cell` crashed the entire unattended run**, not just that one cell. The checkpoint always recovered correctly afterwards (the in-progress cell was never in `checkpoint.json`, so a rerun resumed cleanly) — but only if I noticed and restarted the script, which defeats the purpose of running overnight.
+
+### What I added and why
+- **Wrapped the whole body of `run_one_cell` in `try / except Exception`.** On any unexpected exception: append `timestamp: cell_id - error` to `crashed_cells.txt`, `return`, and let the loop continue with the next cell. The crashed cell is deliberately **not** marked in `checkpoint.json`, so simply re-running the script re-attempts it after everything else has finished.
+- **Why one general fix instead of patching each call as it breaks.** I hit three different failure points already; patching them one by one only ever protects against the failures I have already seen. Wrapping the cell protects against the ones I have not seen yet.
+- **This does not contradict my "no retry framework" decision.** That decision was about not auto-retrying a cell that *genuinely* failed to resolve — a real `resolution_error` is data, not an error. This is about transient infrastructure failures killing the run, which is a different thing entirely.
+- **`except Exception`, not a bare `except:` — chosen deliberately.** `KeyboardInterrupt` inherits from `BaseException`, not from `Exception`, so a bare `except:` would have swallowed Ctrl+C and silently broken the graceful-stop mechanism I built on 23-25.08. The narrower clause keeps the two mechanisms independent of each other.
+- **Made `copy_invalid_rows` conditional.** It used to run at the end of *every* loop, so a run that stopped early (crash or Ctrl+C) still appended the 72 invalid rows, and the next resume appended them a second time. Now the loop reloads `checkpoint.json` afterwards and only writes the invalid rows once every valid cell is actually finished — which, now that crashed cells survive to a later rerun, is the only moment `results.csv` is genuinely complete.
+
+### How this fits together with the Ctrl+C handling from 23-25.08
+- The SIGINT handler sets a `stop_requested` flag instead of raising, and both `if stop_requested: return` checks sit **before** `write_result_file` and `mark_cell_as_finish`. So an interrupted cell is never marked done and is picked up cleanly on the next run.
+- The new `except Exception` cannot catch the interrupt itself, so the two mechanisms do not interfere. Confirmed by reasoning through both paths rather than only testing one.
+
+### Accepted limitation (unchanged decision, but a new consequence)
+- Still **no automatic Docker container teardown** in the script — consistent with my original Phase 6 decision to keep the pipeline focused on research logic rather than infrastructure robustness. Cleanup stays manual (`docker ps` + `docker rm -f`).
+- **New consequence to be aware of during run 3**: a crash no longer stops the script, so nothing prompts me to clean up. A crashed cell's orphaned runner container is still running when I rerun, and that cell will fail again on `docker run --name thesis-runner-<cell_id>` ("name already in use") until I remove the orphan by hand. So: check `docker ps` and `crashed_cells.txt` before each resume.
+- Decided **not** to add a duplicate-row guard to `copy_invalid_rows` for re-invocations after a fully completed run, because before run 3 I delete `checkpoint.json`, `results.csv`, `experiment_matrix.csv` and `artifact_download/` and start from a clean state anyway.
+
+## 3. Bug fixed in `service-ci-java.yml`: C1b failure path did not restore the real pom.xml
+
+### The problem
+- C1b works in two phases: phase 1 moves the cell's `pom.xml` aside to `pom_cell.xml`, copies in `fixed_setup_file/fixed_pom.xml` (pinned `1.0.0`) and resolves it; phase 2 moves the real pom back and re-resolves with `-U`.
+- The **success** path restores the real pom correctly. The **failure** path did not: if the setup-phase sanity check found no `_setup-lockfile.json`, the step did `exit 0` immediately, leaving `pom.xml` = the fixed setup pom and the cell's real pom still sitting in `pom_cell.xml`.
+- Consequence: for those failed cells, the uploaded artifact contained the **wrong pom.xml** — the generic fixed setup pom instead of the one with that cell's actual A/B1/B2 configuration. This does not affect classification (the classifier never reads `pom.xml`), but it makes the artifact useless for manually debugging exactly the cells that failed and most need debugging.
+
+
+### The fix
+- Added `mv pom_cell.xml pom.xml` immediately before the `exit 0` in C1b's setup sanity-check block, mirroring what python's C1b already does.
+- C1a and C1c are unaffected — they never swap the pom at all.
+
+## 4. Reviewed the C1b design as a whole and tested one validity threat
+
+- Checked whether the hard-coded repository in `fixed_pom.xml` could contaminate the measurement. `fixed_pom.xml` points at `maven-group-public-first` (A1a) for **every** cell, and phase 1 populates `~/.m2` from it. If maven-lockfile recorded the *cached* origin rather than the cell's own resolution, then every C1b cell would show `maven-group-public-first` and the whole URL signal would be an artefact of my setup phase rather than a real result.
+- Checked all 48 Java C1b rows from run 2: every recorded URL matches the **cell's own** A/B1 — `A1b` -> `maven-group-private-first`, `A2`/`A3` -> `maven-internal-hosted`, `B1d` -> `repo.maven.apache.org`, and `maven-group-public-first` only where the cell really is A1a. **The setup phase does not leak into the measured evidence.** Worth writing up as a threat to validity that I tested and ruled out empirically, rather than one I just asserted was fine.
+- Confirmed `-U` in phase 2 is necessary, not decorative: Maven's default `updatePolicy` for releases is `daily`, so a cached `maven-metadata.xml` could otherwise hide `1.0.3` from a version range during a multi-hour run. It matters specifically for the A1a cells, where phase 1 and phase 2 hit the same repository.
+- Noted one cross-ecosystem asymmetry for the methodology chapter: npm and pip name the two internal packages explicitly in their update commands (`npm update <pkg1> <pkg2>`, `pip install --upgrade <pkg1> <pkg2>`) — a **targeted** update. Maven has no update verb, so `-U` + re-resolve is a **whole-project** update. The effect on the internal packages is equivalent, but the scope differs, and a reader comparing C1b across the three ecosystems will notice.
+
+## Next steps
+- [ ] Delete `checkpoint.json`, `results.csv`, `experiment_matrix.csv` and `artifact_download/` (after archiving run 2 into `sub-RQ1_result/`), then start the third full 432-cell run from a clean state.
+- [ ] Check `docker ps` and `crashed_cells.txt` before each resume of run 3.
+- [ ] Compare run 3's classification outcomes and evidence completeness against runs 1 and 2, and decide whether the 06.09 double-resolution finding needs to appear in the Results/Limitations chapters.
+- [ ] Write the name + version + URL justification into the methodology chapter, including the three caveats: a group URL identifies the serving repository and not the ultimate upstream; `repositoryId` is deliberately unused; checksums verify integrity, not origin.
