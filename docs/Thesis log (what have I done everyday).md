@@ -2419,3 +2419,259 @@ The three root causes are unrelated, but the gap is the same: **any single netwo
 - [ ] Check `docker ps` and `crashed_cells.txt` before each resume of run 3.
 - [ ] Compare run 3's classification outcomes and evidence completeness against runs 1 and 2, and decide whether the 06.09 double-resolution finding needs to appear in the Results/Limitations chapters.
 - [ ] Write the name + version + URL justification into the methodology chapter, including the three caveats: a group URL identifies the serving repository and not the ultimate upstream; `repositoryId` is deliberately unused; checksums verify integrity, not origin.
+
+# 08.09.2026
+
+Today: re-ran the 45 npm C1b cells after yesterday's fix, verified the fix worked, compared the Java
+results across all three runs, and investigated one unexpected Java result. Ended with a design
+decision about the C1b baseline that I decided **not** to change.
+
+## 1. Re-ran the 45 npm C1b cells and verified the fix
+
+### How I did the re-run
+`checkpoint.json` is a flat JSON list of 432 cell IDs written from a Python `set`, so it is unordered
+and all on one line. Editing it by hand is not practical. I used a small throwaway script instead,
+which did three things:
+1. removed the 45 valid `npm_*_C1b` IDs from `checkpoint.json` (432 -> 387),
+2. removed the same 45 rows from `results.csv` (432 -> 387),
+3. **deleted the 45 matching directories in `artifact_download/`**.
+
+Step 3 turned out to be essential. `download_artifact()` calls `gh run download ... -D dest_dir` and
+**does not clear the directory first**. After the fix a failed cell uploads no `package-lock.json`,
+but the stale one from the previous run would still have been sitting in the directory, and
+`read_npm_evidence()` would have read it. The bug would have survived the re-run and looked fixed.
+
+I left the 3 invalid `npm_A3_B1c_*_C1b` rows alone. They never ran, and `copy_invalid_rows()` reads
+from `experiment_matrix.csv` and does not check the checkpoint, so all 72 invalid rows get appended
+again automatically once every valid cell is finished.
+
+### Result: the fix works, exactly as predicted
+Compared the new `results.csv` against the archived pre-fix version
+(`sub-RQ1_result/0709_backup_wrongresult/results.csv`):
+
+- **Exactly 11 cells changed**, all `private_resolved` -> `resolution_error`. Their package name,
+  version and URL fields are now empty, which is correct: the stale setup lockfile is no longer
+  uploaded, so there is no evidence and the cell is an error.
+  The 11: `npm_{A1a,A1b}_{B1b,B1c,B1d}_B2a_C1b`, `npm_A2_{B1b,B1c,B1d}_B2a_C1b`,
+  `npm_A3_{B1b,B1d}_B2a_C1b`.
+- **The other 34 valid npm C1b cells came out byte-identical.** This is the important half of the
+  check: the fix only fired where the update really failed and changed nothing else.
+- `localhost:8081` dropped from **15 rows to exactly 4** — only the known no-op cells
+  `npm_{A1a,A1b,A2,A3}_B1a_B2a_C1b`, where `npm update` succeeded but had nothing to do.
+- 432 rows before and after, identical cell ID sets, no duplicates.
+
+**The headline number did not move: 190 `malicious_resolved`, unchanged.** This confirms the bug was
+purely "false safe" — it inflated `private_resolved` and never created a false attack success.
+
+## 2. Compared the Java results across all three runs (effect of removing `dependency:tree`)
+
+- Run 1 vs run 2: **0 Java cells differ** (identical pipeline code).
+- Run 3 vs runs 1/2: **6 Java cells differ, all C1b** — exactly the operation the 06.09 change
+  touched. Nothing outside C1b moved, which is the result I wanted.
+
+The evidence became **more complete**, not less:
+
+| cells | runs 1 & 2 | run 3 |
+|---|---|---|
+| 4 cells (`B1d`) | error, version field empty | error, version `1.0.0` now recorded |
+| `mvn_A2_B1a_B2a_C1b` | `resolution_error`, no evidence | `private_resolved`, `1.0.0` from `maven-internal-hosted` |
+| `mvn_A2_B1a_B2b_C1b` | `resolution_error`, no evidence | `private_resolved`, `1.0.2` from `maven-internal-hosted` |
+
+**Explanation:** this confirms the confound I identified on 06.09. Previously `dependency:tree` ran
+first and warmed `~/.m2`, so when `maven-lockfile:generate` ran afterwards it resolved from the local
+cache instead of downloading, and recorded an **empty `resolved` field**. Now `generate` runs from a
+cold cache, actually downloads, and records the real URL. Same mechanism as the cached `javalin`
+observation from 09.08. So removing `dependency:tree` improved measurement validity in a way I can
+now demonstrate with data, not only argue.
+
+Java totals moved from 30/42/18 to **32 private / 42 malicious / 16 error**. The malicious count
+did not change.
+
+## 3. Investigated `mvn_A2_B1a_*_C1b` — why does a hosted-only config resolve successfully?
+
+This looked wrong at first. A2 = internal hosted + a separate public proxy, B1a = the package manager
+points **only** at the internal hosted repo. The public dependencies (`javalin`, `jackson-databind`)
+cannot exist there, so the build should fail — and indeed C1a and C1c for the same configuration are
+both `resolution_error`. Only C1b succeeded.
+
+I compared the two lockfiles of that cell:
+
+| dependency | phase 1 (`fixed_pom.xml`) | phase 2 (cell's A2 x B1a pom) |
+|---|---|---|
+| `jackson-databind` | `maven-group-public-first` | **empty** — served from local `~/.m2` |
+| `javalin` | `maven-group-public-first` | **empty** — served from local `~/.m2` |
+| `xueting-thesis-event-juhe` | `maven-group-public-first` | `maven-internal-hosted` |
+| `xueting-thesis-result-fanhui` | `maven-group-public-first` | `maven-internal-hosted` |
+
+So: `fixed_pom.xml` hardcodes `<url>.../maven-group-public-first/</url>`. Phase 1 downloads the public
+dependencies through the group repository into `~/.m2`. Phase 2 then resolves the two internal
+packages correctly from `maven-internal-hosted` and finds the public ones already cached, so the build
+succeeds. Phase 2 downloaded only 2 artifacts, both unrelated Jetty test jars.
+
+The clean contrast is: **C1a and C1c fail for this configuration, C1b succeeds, and C1b is the only
+operation with a phase 1.**
+
+## 4. Design decision: keep the C1b baseline design as it is
+
+I spent a while questioning whether the C1b design is wrong. Conclusion: **it is not, and I am not
+changing it.** Writing down the reasoning because it belongs in the methodology chapter.
+
+### What the design actually is
+C1b fixes **what** should already be installed (version 1.0.0) using a baseline file, while **where**
+it is fetched from stays the experiment cell's own configuration. Phase 1 is allowed to fail: a
+configuration that cannot obtain 1.0.0 genuinely cannot reach the "update an existing installation"
+scenario, so skipping phase 2 there is the correct behaviour, not a defect.
+C1c has no baseline file at all — phase 1 resolves under the cell's own configuration and produces
+the lockfile that phase 2 then rebuilds from. If phase 1 fails there, the rebuild is meaningless and
+is skipped.
+
+### Why it is defensible even though the three ecosystems do it differently
+The starting state is defined at the **abstract level** ("version 1.0.0 is the current resolved
+state") and each ecosystem realises it with its own native mechanism. This is normal
+operationalisation: state the construct once, then state how each ecosystem implements it, and
+disclose where the implementations differ. Forcing all three to use identical mechanics would be
+**less** valid, because it would measure my harness instead of the real package managers.
+
+- **npm**: the lockfile *is* the record of what is installed, so a fixed `package-lock.json` plus
+  `--package-lock-only` represents "1.0.0 is current" exactly. No installation needed. Consequence:
+  npm's phase 1 can never fail.
+- **pip**: no such record exists, so phase 1 really installs into `./py_dependency`.
+- **Maven**: no lockfile either, so phase 1 resolves a fixed pom.
+
+### The one thing that must be disclosed — and it is a finding, not a weakness
+Only **pip** can separate "what to install" from "where to get it" cleanly. I checked
+`fixed_pyproject.toml`: it contains **zero** registry information, so pip's "where" lives entirely in
+the cell's `pip.conf`. The other two cannot do this:
+- `package-lock.json` records `resolved` URLs,
+- `pom.xml` declares `<repositories>` in the same file as `<dependencies>`.
+
+So in npm and Maven the baseline file unavoidably fixes part of the registry configuration too.
+**This is a structural property of the ecosystems, not a choice I made.** It is exactly the kind of
+ecosystem asymmetry this thesis is about, so it belongs in the results, not only in limitations.
+
+### Concrete consequence: 2 cells
+`mvn_A2_B1a_B2a_C1b` and `mvn_A2_B1a_B2b_C1b` are `private_resolved` because `fixed_pom.xml` let
+phase 1 fetch the public dependencies through the group repository. pip's equivalent cells are
+`resolution_error`, which is what the design intends. I am reporting these 2 cells as they are and
+noting that C1a and C1c give the uncontaminated answer for that configuration. Two cells out of 360,
+fully explained.
+
+Optional future fix (not doing it now): generate the C1b phase-1 pom with pinned `1.0.0` **plus the
+cell's own A/B1 repositories**, reusing `generate_pom_xml`. That would make Maven match pip exactly
+and would probably turn those 2 cells into `resolution_error`. Not worth another 45-cell run, because
+C1a and C1c already give the clean answer.
+
+### Paragraph drafted for the methodology chapter
+> The starting state for the package update operation is defined at the level of the resolved
+> dependency state: version 1.0.0 is current. Each ecosystem establishes this state with its own
+> native mechanism, because no single mechanism exists across all three. In npm the lockfile is
+> itself the record of the resolved state, so a fixed `package-lock.json` is sufficient and no
+> installation is required. In pip and Maven no such record exists, so the state is created by
+> resolving a fixed dependency declaration. The registry configuration remains that of the
+> experiment cell in all three cases, except that `package-lock.json` and `pom.xml` also carry
+> registry information, so in those two ecosystems the baseline additionally fixes part of the
+> registry configuration. This is a structural property of the ecosystems rather than a choice in
+> the experiment design.
+
+## 5. A finding that came out of all this: cache state is a hidden variable
+
+The same registry configuration (A2 x B1a) gives three different outcomes in Maven depending only on
+the CI operation:
+
+- **C1a** (fresh install, cold cache) -> build fails
+- **C1b** (update from an existing installation) -> succeeds, safely, `1.0.0` from the private repo
+- **C1c** (rebuild with a lockfile generated under this configuration) -> phase 1 fails, skipped
+
+This is the resolution-level version of "it works on my machine", and it is attributable to a **test
+variable** (C1), not to an artefact. It also has a realistic reading: it models an organisation that
+previously used a group repository with public access and later locked down to hosted-only. Under
+that history the build keeps working. Worth a paragraph in the results chapter.
+
+## 6. Final numbers after all fixes (this is the dataset I will analyse)
+
+432 rows, 360 executable cells, 72 not expressible.
+
+| classification | cells |
+|---|---|
+| `malicious_resolved` | **190** (52.8 % of 360) |
+| `resolution_error` | 99 |
+| `private_resolved` | 71 |
+| `invalid_configuration` | 72 |
+
+Per test variable, valid cells only:
+
+| variable | level | n | malicious | rate |
+|---|---|---|---|---|
+| B2 | B2a pinned | 135 | **0** | **0.0 %** |
+| B2 | B2b range | 135 | 116 | 85.9 % |
+| B2 | B2c unspecified | 90 | 74 | 82.2 % |
+| A | A1a public-first group | 96 | 58 | 60.4 % |
+| A | A1b private-first group | 96 | 58 | 60.4 % |
+| A | A2 hosted + separate proxy | 96 | 43 | 44.8 % |
+| A | A3 hosted-only | 72 | 31 | 43.1 % |
+| B1 | B1a single private URL | 96 | 33 | 34.4 % |
+| B1 | B1b multi-registry, direct public | 96 | 60 | 62.5 % |
+| B1 | B1c multi-registry, public via proxy | 72 | 45 | 62.5 % |
+| B1 | B1d default | 96 | 52 | 54.2 % |
+| C1 | C1a / C1b / C1c | 120 each | 66 / 58 / 66 | 55.0 / 48.3 / 55.0 % |
+
+Note for myself: only the rates that are exactly **0** carry a claim. Everything between 0 and 100 is
+an average over an unbalanced set of the other variables and must not be used to claim that one
+variable causes the attack. The analysis unit is the configuration combination.
+
+## 7. The rule that answers sub-RQ1 (tested on the final data)
+
+> The attack succeeds **if and only if** both hold:
+> 1. the version specifier is **not pinned** (B2b or B2c), **and**
+> 2. the resolver **can reach a public source** — directly, through the Nexus proxy, or through a
+>    group repository that has a public member.
+>
+> Condition 2 fails only when the package manager points at a single repository with no public
+> upstream (B1a with A2 or A3). Two documented exceptions:
+> - **Maven A3 x B1a still reaches Central**, because the `id=central` override does not apply there
+>   and the super-POM's real Central leaks in (my design decision, 09.08).
+> - **pip B1d x C1b** never reaches phase 2, which is the intended C1b behaviour (see point 4).
+
+**Tested against all 360 executable cells of the final dataset: 0 misclassifications.**
+
+Supporting numbers:
+- Pinned cells: 135, of which **0** were attacked (66 safe, 69 build errors).
+- Non-pinned cells: 225. Of these 30 failed to resolve anything, leaving 195 where the build produced
+  a result — and **190 of those 195 (97.4 %)** got the attacker's package.
+- `A1a` and `A1b` gave the **same outcome in all 96 comparable coordinates**, zero differences.
+- Of the successful attacks, **150 of 380 package resolutions (39 %) were served by Nexus itself**
+  (group or proxy), and 230 (61 %) came directly from the public registry.
+
+Note the extra point in condition 2: when the resolver cannot reach a public source, the cell does
+**not** simply become safe — usually the build fails. In npm and pip this is a fail-closed failure.
+Maven A2 x B1a under C1b is the one place where it is genuinely safe, and only because of the cache
+(see point 3).
+
+## 8. Minimal-pair counts (how I isolate a single variable without statistics)
+
+Counting cell pairs that are identical except in one variable and flip between "attacked" and "safe":
+
+| ecosystem | flips from A | B1 | B2 | C1 |
+|---|---|---|---|---|
+| npm | 8 | 10 | 12 | 0 |
+| PyPI | 0 | 0 | 54 | 0 |
+| Maven | 3 | 3 | 30 | 0 |
+
+For pip, **no single change of A, B1 or C1 ever turns an attacked cell into a safe one — only B2
+does.** Maven's 3 + 3 come from the `mvn_A2_B1a_*_C1b` cache cells discussed in point 3, so they must
+be read together with that explanation. npm's counts dropped after the C1b fix (34 -> 12 for B2)
+because 11 cells moved from "safe" to "build error", which removes them from safe/attacked pairs.
+
+- important links for drawing graph for result analysis: https://matplotlib.org/stable/gallery/images_contours_and_fields/image_annotated_heatmap.html
+
+## Next steps
+- [ ] Archive the corrected run 3 into `sub-RQ1_result/` as the final dataset.
+- [ ] Report to supervisor: the findings above, the C1b baseline design decision, and the four open
+      questions in `sub-RQ1_result/analysis/sub-RQ1_analysis_plan_for_supervisor.md`.
+- [ ] Start the result analysis: Figure C (outcome map), then the rule test, then the cross-ecosystem
+      comparison and the system-level aggregation.
+- [ ] Amend the 07.09 point 4 entry: that validity check verified the **internal** packages' URLs,
+      which are correct. It did not check the **public** dependencies, which is where the phase-1
+      cache effect shows up.
+- [ ] Write the methodology paragraph from point 4 and the C1 / cache finding from point 5.
+
