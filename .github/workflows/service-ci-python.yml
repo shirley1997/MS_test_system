@@ -209,12 +209,12 @@ jobs:
 
           # Sanity check: if initial phase failed (resolution error, no lock file generated), then rebuild with lockfile phase is meaningless
           if [ ! -s "pylock.${{ inputs.cell_id }}.toml" ]; then
-            echo "[C1c] setup phase: pip lock failed, no lockfile produced. skip "rebuild with lockfile" phase." \
+            echo "[C1c] setup phase: pip lock failed, no lockfile produced. skip rebuild with lockfile phase." \
               | tee "${{ inputs.cell_id }}_pip_log.txt"
             exit 0
           fi
 
-          echo "[C1c] pip lockfile generated successfully. now running "rebuild with lockfile" phase"
+          echo "[C1c] pip lockfile generated successfully. now running rebuild with lockfile phase"
 
           pip install --dry-run --ignore-installed \
             -r "pylock.${{ inputs.cell_id }}.toml" \

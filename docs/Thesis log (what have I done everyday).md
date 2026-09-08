@@ -2317,6 +2317,103 @@ The three root causes are unrelated, but the gap is the same: **any single netwo
 - Confirmed `-U` in phase 2 is necessary, not decorative: Maven's default `updatePolicy` for releases is `daily`, so a cached `maven-metadata.xml` could otherwise hide `1.0.3` from a version range during a multi-hour run. It matters specifically for the A1a cells, where phase 1 and phase 2 hit the same repository.
 - Noted one cross-ecosystem asymmetry for the methodology chapter: npm and pip name the two internal packages explicitly in their update commands (`npm update <pkg1> <pkg2>`, `pip install --upgrade <pkg1> <pkg2>`) — a **targeted** update. Maven has no update verb, so `-U` + re-resolve is a **whole-project** update. The effect on the internal packages is equivalent, but the scope differs, and a reader comparing C1b across the three ecosystems will notice.
 
+## 5. Bug found in `service-ci-nodejs.yml`: C1b uploaded the setup lockfile as the cell's evidence -> leading incorrect classification of 1. and 2. experiment run!!
+
+### How I found it
+- While planning the result analysis, I added one check: for every cell, does the evidence file that the classifier reads really come from the **operation under test**, and not from the setup phase?
+- I compared each C1b cell's `_npm_log.txt` with its classification in `results.csv`.
+- Found **11 npm C1b cells labelled `private_resolved` even though their log clearly says `npm error code ETARGET`**. The update had failed, but the cell looked safe.
+- Extra clue that confirmed it: the string `localhost:8081` appears in the resolved URL of **exactly 15 nodejs C1b rows and nowhere else** in the whole result file. `localhost` is the old hostname stored inside the fixed setup lockfile.
+- This also **corrects my earlier note from 21-22.08**, where I assumed `localhost:8081` came from Nexus caching computed metadata. That was wrong. It comes from the fixed setup lockfile.
+- The affected cells are all npm, all B2a: `npm_{A1a,A1b,A2,A3}_{B1b,B1c,B1d}_B2a_C1b` (A3 x B1c is invalid, so 11 and not 12).
+
+### The problem
+- C1b phase 1 copies `fixed_setup_file/npm-service-fixed-lock.json` to `package-lock.json`.
+- C1b phase 2 ran `npm update ... 2>&1 | tee log || true`, which writes to **the same file name** `package-lock.json`.
+- Two things went wrong together:
+  1. In a pipeline `A | B`, bash returns the exit code of the **last** command. That is `tee`, and `tee` always succeeds, because writing a file works even when the text it copies is an error message. So a failed `npm update` looked successful. The `|| true` at the end hid it even more.
+  2. When the update failed, `package-lock.json` was still the **untouched setup file**, and it was uploaded as this cell's evidence.
+- The central pipeline then read that setup lockfile, saw internal version `1.0.0` coming from a Nexus repository, and wrote `private_resolved`.
+- Direction of the error is **"false safe"**: these cells look protected, although the update actually failed. It never produces a false `malicious_resolved`, so my main findings do not change. (basically it should be classify as "resolution error" but turns out to "private_resolved". this is also wrong classification and need to be fixed immediately)
+- Important: **this is a CI workflow bug, not a classifier bug.** The classifier only receives a file. It cannot know which phase produced it. The new `get_repo_origin` logic I wrote earlier today could not have prevented this.
+
+### The fix
+- Keep the setup state under its own name so nothing is lost: `cp package-lock.json "<cell_id>_setup-package-lock.json"`, and add that file to the upload list.
+- Add `set -o pipefail` so the pipeline reports **npm's** exit code instead of `tee`'s.
+- Replace `... || true` with `if ! npm update ...; then ... fi`, and delete `package-lock.json` inside that block when the update failed.
+- Result: no evidence file is uploaded, `read_npm_evidence` returns `None`, and the classifier writes `resolution_error`. This is the correct outcome, because if the operation under test did not run, the cell holds no valid observation.
+- **No Python change was needed.** The classifier already handles a missing evidence file correctly.
+- Note on syntax: a command used as an `if` condition is not affected by the default `set -e` of GitHub Actions, so the step does not abort early.
+
+## 6. Applied the same fail-closed rule to npm C1c (defensive, no data changed)
+
+- After finding the C1b bug I checked whether C1c has the same weakness, because C1c also touches `package-lock.json` in both phases.
+- Checked the official npm documentation for `npm ci`: *"It will never write to `package.json` or any of the package-locks: installs are essentially frozen."*
+- So for C1c the phase-1 lockfile **is** the correct evidence, because `npm ci` performs no dependency resolution at all. It only installs what the lockfile already decided. This is the same point I noted for pip C1c on 08.08: locking only freezes whatever resolution outcome already happened.
+- But there is still a gap: if `npm ci --dry-run` itself failed, the phase-1 lockfile would still be uploaded, and the cell would be scored as if the rebuild had succeeded.
+- Decision: apply the same rule as C1b, mainly for **cross-ecosystem consistency**. pip C1c and java C1c already fail closed, because their phase 2 writes its own evidence file. npm should behave the same way, otherwise the same situation would be labelled differently in different ecosystems, which would damage the cross-ecosystem comparison.
+- Important difference from C1b: here I keep the phase-1 lockfile as `<cell_id>_setup-package-lock.json`, because it is real resolution evidence and must not be lost.
+- This changed nothing in the data: **0 of 45 npm C1c cells have ever failed** in any run. So npm C1c does **not** need to be re-run.
+
+### One sentence for the methodology chapter (now true for all three ecosystems)
+> If the operation under test (for example package update, rebuild with lockfile failed in phase 2) does not complete, then the cell doesn't produce valid observation file (e.g. lockfile) and is recorded as `resolution_error`.
+
+## 7. Checked the python and java pipelines for the same kind of bug - none found
+
+- The npm bug happened because phase 1 and phase 2 wrote the **same** file name. So I checked whether the other two ecosystems do the same. They do not:
+
+| pipeline | phase 1 writes | phase 2 / 3 writes | classifier reads |
+|---|---|---|---|
+| pip C1b | `_setup-install-report.json` | `_install-report.json` | `_install-report.json` |
+| pip C1c | `pylock.<cell_id>.toml` | `_install-report.json` | `_install-report.json` |
+| mvn C1b | `_setup-lockfile.json` | `_lockfile.json` | `_lockfile.json` |
+| mvn C1c | `_lockfile.json` | `_rebuild-lockfile.json` | `_rebuild-lockfile.json` |
+
+- In all four cases the classifier reads **only** the file written by the phase under test. So if phase 2 fails, there is simply no evidence file and the cell correctly becomes `resolution_error`.
+- The java pipeline also deletes `${cell_id}_*.json` in its cleanup step, so there is no carry-over between cells either.
+- I also checked this against the real run 2 data, not only by reading the code:
+  - Rule "`resolution_error` if and only if the evidence file is missing": **0 violations** across all 360 valid cells.
+  - pip writing a `--report` file even though pip failed: **0 cases**.
+  - java lockfile present but internal packages missing, or with an empty `resolved` field: **0 cases**.
+- Extra check: I re-ran today's rewritten classifier over the **archived run-2 artifacts**. All 360 valid cells came out exactly the same as stored: 190 `malicious_resolved` / 80 `private_resolved` / 90 `resolution_error`, **0 mismatches**. This proves two things at once:
+  1. The saved artifacts are complete enough to rebuild `results.csv` from scratch, so I can re-classify offline without re-running any cell.
+  2. Today's classifier rewrite really is outcome-identical to the old port-based version on run-2 data. Earlier I only argued this; now it is measured.
+- Honest limit of this check: it proves that no bug **shows up in the data**, and that the file naming design is sound. It cannot prove that a code path which never ran is correct. The path "phase 1 succeeds, phase 2 fails" has never happened for pip C1c and java C1b / C1c. The npm bug was findable exactly because it did happen, 11 times.
+
+## 8. A second, smaller npm C1b problem that the fix does NOT solve
+
+- 4 further cells also carry `localhost:8081` in their URL: `npm_{A1a,A1b,A2,A3}_B1a_B2a_C1b`.
+- Here `npm update` really **succeeded**, but it did **nothing**: B2a pins version `1.0.0`, and the lockfile already contained `1.0.0`, so there was nothing to update.
+- Because npm did not rewrite the file, the `resolved` URL stayed exactly as it was inside the fixed setup lockfile: `npm-group-public-first`.
+- For the A2 and A3 cells that repository does not even exist in their configuration.
+- So the **classification is correct** (`private_resolved`, because version `1.0.0` really did come from Nexus), but the **recorded URL does not belong to this cell**.
+- The fix from point 5 does not help here, because npm exits with code 0. This is a property of the static setup lockfile, not a failure.
+- How I will handle it: mark these 4 cells during result analysis and never use them for any statement about **where** a package came from. They are not used in the malicious-origin analysis anyway, because that analysis only looks at `malicious_resolved` cells.
+- Counter example proving the normal C1b path still works: `npm_A2_B1a_B2b_C1b` prints the same short `up to date` message, but really did rewrite the lockfile (`1.0.0` -> `1.0.2` from `npm-internal-hosted`). So `up to date` alone is not a failure signal. The URL is what tells the two cases apart.
+
+## 9. How I will re-run the experiment after this fix
+
+- Run 3 had already finished **all 135 npm cells** before I found the bug, so the npm C1b cells in run 3 are affected too.
+- Decision: **do not stop run 3.** The pip and java cells are not affected by this bug, and stopping now would throw them away for nothing. The npm cells would need re-running either way.
+- After run 3 finishes:
+  1. Archive run 3 into `sub-RQ1_result/` like the previous runs.
+  2. Delete the 45 `npm_*_C1b` entries from `checkpoint.json`.
+  3. Delete the same 45 rows from `results.csv`.
+  4. Start the central automated pipeline normally.
+- I do **not** need to build the `--cells` subset option for this. The existing checkpoint logic already skips finished cells, so it will skip the other 387 and only run the 45 missing ones.
+- Regression check for the re-run (this is how I will know the fix worked):
+  - Exactly **11 cells** must change from `private_resolved` to `resolution_error`.
+  - The other **34 cells must come out exactly the same** as before. If any of them changes, something else is wrong.
+  - After the re-run, `localhost:8081` must appear in exactly **4 rows** of `results.csv` - only the no-op cells from point 8.
+- npm C1c does **not** need to be re-run (0 failures ever).
+- pip and java do **not** need to be re-run for this bug.
+
+### What this means for the thesis text
+- Implementation chapter 6.4: describe the two-phase C1b design, and why phase 1 and phase 2 must never write the same file name.
+- Methodology chapter: the one-sentence rule from point 6, that an incomplete operation is recorded as `resolution_error` in all three ecosystems.
+- Limitations: the 4 no-op cells from point 8, and the fact that npm establishes the "existing lockfile" state with a **static file**, while pip and java do a **live resolve using the cell's own configuration**. This is a real construct asymmetry between the ecosystems and should be stated, not hidden.
+
+
 ## Next steps
 - [ ] Delete `checkpoint.json`, `results.csv`, `experiment_matrix.csv` and `artifact_download/` (after archiving run 2 into `sub-RQ1_result/`), then start the third full 432-cell run from a clean state.
 - [ ] Check `docker ps` and `crashed_cells.txt` before each resume of run 3.

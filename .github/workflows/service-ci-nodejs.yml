@@ -57,6 +57,7 @@ jobs:
           rm -f package-lock.json
           rm -f .npmrc
           rm -rf node_modules
+          rm -f ${{ inputs.cell_id }}_*.txt ${{ inputs.cell_id }}_*.json
           npm cache clean --force
           echo "workspace cleaned"
 
@@ -136,7 +137,19 @@ jobs:
       
       # C1b: package update situation: copy the fixed package-lock.json to the service directory
       # based on this package-lock.json to update the package from the configured registry in .npmrc (according to the cell)
-      
+      # bug fixed 07.09: edge case: if update phase fail (e.g. because of the input configuration), the fixed lockfile is still there
+      # and names "package-lock.json", it will be uploaded as artifact to GitHub, which will cause incorrect result classification
+      # becuase this is lockfile from setup phase, not produced by update phase
+      # solution: 
+      #  1.copy fixed baseline file to npm service directory as "package-lock.json"
+      # 2. then copy another portion named "Cell ID_setup-lock.json"
+      # and if update phase fails, then remove the fixed baseline file "package-lock.json"
+      # otherwise the central pipeline thinks the update phase is successful becuase it received package-lock.json (which is actually fixed baseline file)
+      #  use set -o pipefail: let the exit code of the pipeline be npm's exit code, not tee's.
+      # without using it, a pipeline reports the exit code of the LAST command (tee),
+      # so a failed npm update looks successful and its setup phase lockfile is uploaded as evidence. (which is wrong!)
+      # With pipefail the if-block below runs exactly when npm update itself fails,
+      # e.g. ETARGET when the pinned version does not exist in this cell's configured registry.
       - name: Apply CI pipeline operation (C1b - package update) and run update command 
         if: inputs.C1 == 'C1b'
         working-directory: services/nodejs
@@ -148,12 +161,26 @@ jobs:
           fi
 
           cp "${{ github.workspace }}/fixed_setup_file/npm-service-fixed-lock.json" package-lock.json
+          cp package-lock.json "${{ inputs.cell_id }}_setup-package-lock.json"
           echo "[Apply C1b] copied fixed lockfile into npm service directory"
-          npm update xueting-thesis-event-jianding xueting-thesis-service-fasong --package-lock-only 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
+
+                    
+          set -o pipefail
+
+          if ! npm update xueting-thesis-event-jianding xueting-thesis-service-fasong --package-lock-only \
+               2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt"; then
+            echo "[C1b] update phase failed. removed the carried-over setup lockfile."
+            rm -f package-lock.json
+          fi
 
       # C1c: rebuild with lockfile: run install command before apply C1c to generate lockfile, 
       # then based on the generated package-lock.json to test C1c. if initial install cause resolution error -> no lockfile will generated
       # then skip running npm ci because it is not meaningful anymore 
+      # if phase 1 success: keep the phase-1 lockfile under its own name, so it stays inspectable even if the
+      # rebuild phase fails and package-lock.json has to be removed
+      # if phase 2 failed, so this cell doesn't have file for valid observation of the C1c scenario. 
+      # remove package-lock.json so the central pipeline
+      # finds no evidence and classifies resolution_error
       - name: Apply CI pipeline operation (C1c - rebuild with lockfile) and run update command 
         if: inputs.C1 == 'C1c'
         working-directory: services/nodejs
@@ -169,8 +196,19 @@ jobs:
             echo "[C1c] initial install failed: no lockfile generated. skip running npm ci." | tee "${{ inputs.cell_id }}_npm_log.txt"
             exit 0
           fi
+
+
+          cp package-lock.json "${{ inputs.cell_id }}_setup-package-lock.json"
+
           echo "[C1c] lockfile generated after initial install, now run npm ci for rebuild"
-          npm ci --dry-run 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt" || true
+
+          set -o pipefail
+          if ! npm ci --dry-run 2>&1 | tee "${{ inputs.cell_id }}_npm_log.txt"; then
+
+            echo "[C1c] rebuild phase (npm ci) failed. removed package-lock.json; phase 1 lockfile kept as _setup-package-lock.json." \
+              | tee -a "${{ inputs.cell_id }}_npm_log.txt"
+            rm -f package-lock.json
+          fi
 
 
       # 6. Run dependency resolution command
@@ -201,6 +239,7 @@ jobs:
             services/nodejs/.npmrc
             services/nodejs/package.json
             services/nodejs/package-lock.json
+            services/nodejs/${{ inputs.cell_id }}_setup-package-lock.json
             services/nodejs/${{ inputs.cell_id }}_npm_log.txt
             services/nodejs/${{ inputs.cell_id }}_npm_setup_log.txt
             services/nodejs/${{ inputs.cell_id }}_invalid.txt
