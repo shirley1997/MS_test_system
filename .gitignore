@@ -52,8 +52,14 @@ ID-effective-pom-checks
 maven_lockfile_example.json
 automation_process/central_automated_pipeline/checkpoint.json
 automation_process/central_automated_pipeline/artifact_download
-sub-RQ1_result
+
 automation_process/central_automated_pipeline/results_diff.csv
 automation_process/central_automated_pipeline/compare_results.py
 sub-RQ2_tool_selection
 automation_process/central_automated_pipeline/results.csv
+sub-RQ1_result/*
+!sub-RQ1_result/analysis
+
+docs/summary_result_analysis.md
+docs/summary_structure.md
+sub-RQ1_result/analysis/sub-RQ1_RQ2_process.md

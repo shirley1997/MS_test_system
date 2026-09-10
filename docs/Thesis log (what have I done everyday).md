@@ -2675,3 +2675,182 @@ because 11 cells moved from "safe" to "build error", which removes them from saf
       cache effect shows up.
 - [ ] Write the methodology paragraph from point 4 and the C1 / cache finding from point 5.
 
+# 10.09.2026
+
+Today: audited the config generator scripts (the last part of the pipeline I had never
+checked line by line), found two things worth documenting, wrote down how the "package update"
+operation is realised in each of the three ecosystems, and built the first result figure.
+
+## 1. Audited all five config generator scripts
+
+Until now I had verified the **classification** path (classifier replay, evidence invariants) but
+never read the scripts that turn the abstract test variables A, B1 and B2 into real config files.
+Read all five in `automation_process/config_generator/`:
+`generate_npmrc.py`, `generate_pipconf.py`, `generate_pom_xml.py`,
+`generate_npm_version_specifier.py`, `generate_python_version_specifier.py`.
+
+**Result: syntax and logic are correct.** Every invalid combination is guarded with `ValueError`,
+and A, B1 and B2 are faithfully realised:
+
+- **A** maps to the right Nexus repository names in all three ecosystems
+  (`*-group-public-first`, `*-group-private-first`, `*-internal-hosted`).
+- **B1a** = one private URL, **B1b** = private + real public, **B1c** = private + Nexus proxy,
+  **B1d** = no config file written at all. Correct in all three.
+- **B2** = npm `1.0.0` / `>=1.0.0 <2.0.0` / `*`; pip `==1.0.0` / `>=1.0.0,<2.0.0` / empty;
+  Maven `1.0.0` / `[1.0.0,2.0.0)` and B2c correctly rejected.
+- The invalid guards (A3 x B1c everywhere, B2c in Maven) produce exactly the 72 invalid cells.
+- Public dependencies are pinned in all three services (`express`, `Flask==3.1.1`,
+  `javalin 7.2.2` + `jackson 2.21.2`), so only the internal packages vary between cells.
+
+## 2. Finding from the audit: for npm and pip, A2 and A3 are experimentally indistinguishable
+
+Both A2 and A3 map to `*-internal-hosted`, so under **B1a, B1b and B1d the generated config file is
+byte-identical** for the two. Only B1c separates them, and there A3 is invalid by definition.
+
+Checked this against the results as well, not only in the code. Per ecosystem there are 36
+coordinates where A2 and A3 can be compared:
+
+| ecosystem | identical | different |
+|---|---|---|
+| npm | 27 | 9 (all B1c rows, where A3 is `invalid_configuration`) |
+| pip | 27 | 9 (all B1c rows, where A3 is `invalid_configuration`) |
+| Maven | 25 | 11 (the B1c rows **plus B1a rows**) |
+
+So for npm and pip there is **not one coordinate where both A2 and A3 are valid and they differ**.
+
+**This is not an error.** A2 and A3 differ only in whether a proxy repository *exists* in Nexus, and
+a client that is never pointed at it cannot observe it. The correct reading is a finding in its own
+right: *a proxy repository that the package manager is not configured to use has no effect on
+resolution.* But it must be stated in the results chapter, otherwise a reader will wonder why the A2
+and A3 rows look the same.
+
+**Maven is the exception, and only because of my `id=central` decision (09.08).** Under A3 x B1a the
+repository entry uses its own repository name as the ID, so the super-POM's real Maven Central is not
+overridden and leaks in; under A2 x B1a the ID is `central` and it is overridden. That is why Maven
+has 2 extra differing rows. Add this to the list of documented cross-ecosystem disagreements.
+
+## 3. Second finding: `.npmrc` was never uploaded as an artifact
+
+While checking a cell folder I noticed that **no npm cell directory contains `.npmrc`**, although it
+is listed in the upload step of `service-ci-nodejs.yml`.
+
+Cause: `actions/upload-artifact` v4.4+ **excludes hidden files by default** unless
+`include-hidden-files: true` is set, and `.npmrc` starts with a dot. `pip.conf` and `pom.xml` are not
+dotfiles, so they were uploaded normally.
+
+**No effect on any result**: the classifier never reads `.npmrc`, and the resolved URLs in the
+lockfiles prove the configuration was applied correctly. But it means I cannot show the generated
+`.npmrc` of a specific cell afterwards. If I ever want that evidence in the appendix, the fix is one
+line in the upload step. Not re-running anything for this.
+
+## 4. Two small robustness notes in the generators (no effect on results, not fixed)
+
+- `generate_npm_version_specifier.py` uses `if name in deps`, so if an internal package were missing
+  from `package.json` the B2 specifier would be silently skipped instead of raising an error. Both
+  packages are present, so this never happened. A `raise` would be safer.
+- `generate_pipconf.py` hardcodes `trusted-host = host.docker.internal` while `nexus_url` is a
+  parameter. Harmless for the experiment (the runner always uses that host), but the two values could
+  drift apart in local development.
+
+## 5. Correction to my own notes: Maven C1c **does** have a setup phase
+
+I had written in a few places that C1a and C1c "have no setup phase". That is wrong for C1c.
+Maven C1c has three phases: `generate` (produce the lockfile) -> `freeze` (pin every dependency into
+`pom.lockfile.xml`) -> `generate` again against the frozen POM.
+
+**The real difference is not whether there is a setup phase, but which configuration it runs under:**
+
+- **C1b phase 1** uses `fixed_pom.xml`, a fixed file that carries its own `<repositories>` block
+  pointing at the group repository. It can therefore pull packages the cell's own configuration could
+  never reach.
+- **C1c phase 1** uses **the cell's own `pom.xml`**. It can only reach what the cell's A x B1
+  configuration can reach, so nothing foreign enters `~/.m2`.
+
+Evidence for `mvn_A2_B1a_B2a_C1c` (log `..._mvn_lockfile_log.txt`):
+
+```
+[ERROR] Could not find artifact io.javalin:javalin:jar:7.2.2
+        in central (http://host.docker.internal:8081/repository/maven-internal-hosted/)
+[ERROR] Could not find artifact com.fasterxml.jackson.core:jackson-databind:jar:2.21.2
+        in central (http://host.docker.internal:8081/repository/maven-internal-hosted/)
+```
+
+Phase 1 fails, no `lockfile.json` is produced, so the freeze and rebuild phases are skipped and the
+cell is correctly `resolution_error`. The cell folder contains only the log and the pom, no lockfile,
+which confirms the guard fired. The `~/.m2` cache is also wiped at the start of every Java cell
+(`rm -rf $HOME/.m2/repository`), so phase 1 runs cold.
+
+## 6. Overview: how "package update" (C1b) is realised in the three ecosystems
+
+This belongs in the methodology chapter. The abstract idea is the same everywhere: **first put the
+project into a fixed starting state (version 1.0.0 is already installed), then run the update using
+the cell's own registry configuration.** But the three ecosystems have to realise it differently,
+because their files and commands are different.
+
+| | npm | pip | Maven |
+|---|---|---|---|
+| baseline file used in phase 1 | `npm-service-fixed-lock.json` | `fixed_pyproject.toml` | `fixed_pom.xml` |
+| does phase 1 really resolve/install? | **no** - only a file copy | **yes** - real install into `./py_dependency` | **yes** - real resolve into `~/.m2` |
+| can phase 1 fail? | **no** | yes | yes |
+| does the baseline file also fix the registry? | **yes** (lockfile stores `resolved` URLs) | **no** - clean separation | **yes** (`<repositories>` is in the same file) |
+| phase 2 command | `npm update <pkg1> <pkg2> --package-lock-only` | `pip install --dry-run --upgrade <pkg1> <pkg2>` | `mvn -U ...:generate` |
+| can it update only the internal packages? | **yes** | **yes** | **no** - whole project only |
+| are the public dependencies touched in phase 2? | no, entries are carried over unchanged | yes, re-resolved | yes, but usually served from the `~/.m2` cache |
+| evidence file of phase 2 | `package-lock.json` | `<cell_id>_install-report.json` | `<cell_id>_lockfile.json` |
+
+### The two consequences worth writing down
+
+**(a) Only pip can fully separate "what to install" from "where to get it".**
+I checked `fixed_pyproject.toml`: it contains **zero** registry information, so pip's "where" lives
+entirely in the cell's own `pip.conf`. npm and Maven structurally cannot do this -
+`package-lock.json` records `resolved` URLs and `pom.xml` declares `<repositories>` next to
+`<dependencies>`. **This is a property of the ecosystems, not a choice in my design**, and it is
+therefore a result and not only a limitation.
+
+**(b) Maven has no per-package update command.**
+There is no equivalent of `npm update <pkg>` or `pip install --upgrade <pkg>`. In Maven the version
+lives in the POM, so "updating" means editing the POM, and `-U` only forces a project-wide re-check
+of remote metadata. The third-party `versions-maven-plugin` could target single coordinates, but it
+**rewrites the POM** and would replace the B2 version specifier I am testing, so it is unusable here.
+Effect on the internal packages is equivalent across the three; the **scope** is not.
+
+### Paragraph drafted for the methodology chapter
+
+> The starting state for the package update operation is defined at the level of the resolved
+> dependency state: version 1.0.0 is current. Each ecosystem establishes this state with its own
+> native mechanism, because no single mechanism exists across all three. In npm the lockfile is
+> itself the record of the resolved state, so a fixed `package-lock.json` is sufficient and no
+> installation is required. In pip and Maven no such record exists, so the state is created by
+> resolving a fixed dependency declaration, and the setup phase may fail if the cell's configuration
+> cannot obtain that version. The registry configuration remains that of the experiment cell in all
+> three cases, except that `package-lock.json` and `pom.xml` also carry registry information, so in
+> those two ecosystems the baseline additionally fixes part of the registry configuration. This is a
+> structural property of the ecosystems rather than a choice in the experiment design.
+
+## 7. Built the first result figure (Figure C)
+
+Wrote `sub-RQ1_result/analysis/figure_c_outcome_map.py`. It draws all 432 experiment cells on one
+page: 3 panels (npm / Pip / Maven), rows = A x B1 (16), columns = B2 x C1 (9), colour = result, and a
+letter (M / P / E / -) inside every cell so the figure is still readable in black-and-white print.
+
+- Built with `imshow()`, following the official matplotlib example
+  ["Annotated heatmap"](https://matplotlib.org/stable/gallery/images_contours_and_fields/image_annotated_heatmap.html),
+  so the script is a small adaptation of a documented example rather than custom code.
+- Outputs `figure_c_outcome_map.pdf` (vector, for Overleaf) and `.png` (for slides).
+- The script **prints the result counts every time it runs** (432 / 190 / 71 / 99 / 72) and compares
+  them with the expected values, so the figure can never silently drift away from the data.
+- Also built the same figure in Excel first (`result_analysis_excel.xlsx`) as an independent check.
+  Both agree.
+
+Small thing that cost me time and is worth remembering: a Windows path written as a normal Python
+string, `"sub-RQ1_result\0809\results.csv"`, is broken, because `\0` is a null character and `\r` is a
+carriage return. The script now builds the path from `Path(__file__).resolve().parent`, which also
+makes it independent of the folder you start it from.
+
+## Next steps
+- [ ] Continue the result analysis following the plan (see `docs/summary_result_analysis.md` for the
+      current state and the day-by-day schedule).
+- [ ] Write the A2/A3 observation from point 2 into the results chapter, and add the Maven A3 x B1a
+      case to the cross-ecosystem disagreement list.
+- [ ] Write the C1b overview table from point 6 into the methodology chapter.
+- [ ] Decide whether the `.npmrc` upload gap from point 3 is worth fixing for the appendix.
