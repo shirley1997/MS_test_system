@@ -1,0 +1,15 @@
+variable,variable_option,valid_cells_involve_this_option,malicious resolved,private resolved,resolution error,malicious_resolved_rate_percentage
+A,A1a,96,58,21,17,60.4
+A,A1b,96,58,21,17,60.4
+A,A2,96,43,17,36,44.8
+A,A3,72,31,12,29,43.1
+B1,B1a,96,33,29,34,34.4
+B1,B1b,96,60,24,12,62.5
+B1,B1c,72,45,18,9,62.5
+B1,B1d,96,52,0,44,54.2
+B2,B2a,135,0,66,69,0.0
+B2,B2b,135,116,3,16,85.9
+B2,B2c,90,74,2,14,82.2
+C1,C1a,120,66,21,33,55.0
+C1,C1b,120,58,29,33,48.3
+C1,C1c,120,66,21,33,55.0

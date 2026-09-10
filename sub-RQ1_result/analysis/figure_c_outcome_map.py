@@ -247,7 +247,7 @@ def main():
     else:
         csv_file = default_csv_file
 
-    if not csv_file.exists():
+    if csv_file.exists() == False:
         print("results.csv not found:", csv_file)
         return
 

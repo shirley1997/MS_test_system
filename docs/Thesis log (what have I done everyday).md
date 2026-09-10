@@ -2854,3 +2854,319 @@ makes it independent of the folder you start it from.
       case to the cross-ecosystem disagreement list.
 - [ ] Write the C1b overview table from point 6 into the methodology chapter.
 - [ ] Decide whether the `.npmrc` upload gap from point 3 is worth fixing for the appendix.
+
+# 10.09.2026 - part 2: result analysis day 3 (Step 6 and Step 7a)
+
+day 2 was
+Figure C, which I had already finished on 08.09 - so today I did **day 3: Step 6 (per-variable
+table) and Step 7a (derive the rule and test it against every cell)**.
+
+Everything below is written down in the order I actually did it. Each part is: the question I asked, the
+code I wrote to check results and try to answer it, the output I got, and what that made me ask, or explore next.
+
+Written into one new script: `sub-RQ1_result/analysis/step6_7_variable_table_and_rule.py`.
+It follows the same conventions as `figure_c_outcome_map.py`: the path to `results.csv` is built from
+`Path(__file__).resolve().parent` (a plain string `"...\0809\..."` would break, `\0` is a null
+character), plain `csv.DictReader` instead of pandas, and the same `column_*` constants.
+Input is the final dataset `sub-RQ1_result/0809/results.csv`.
+
+---
+
+## 1. Decisions taken before starting
+
+- **Python script + Excel cross-check**, same as for Figure C. The script is written; the Excel
+  cross-check (pivot table for the per-variable table, VLOOKUP for the A1a/A1b comparison) is
+  **still open** and is carried to tomorrow.
+- **Figure D is deliberately not built today.** The plan lists it as optional, and under the
+  0 %/100 % rule (below) the intermediate bars carry no claim at all - so a bar chart would give a
+  visual weight to numbers that are not allowed to be used as evidence. Decided to keep the table and
+  decide about the figure later.
+- **The 72 invalid cells are removed once, at the start** (`extract_valid_rows`), so no later count
+  can accidentally include them. Every number in this entry is over the **360 executed cells**.
+
+---
+
+## 2. Step 6 - the per-variable table
+
+`variable_table()` loops over the four test variables and calls `count_one_variable_option()` for
+every option. That helper counts, inside one option, how many cells there are and how many ended as
+`malicious_resolved` / `private_resolved` / `resolution_error`.
+
+Output (also written to `sub-RQ1_result/analysis/step6_variable_table.csv`):
+
+| variable | option | valid cells | malicious | private | error | malicious rate |
+|---|---|---|---|---|---|---|
+| A | A1a | 96 | 58 | 21 | 17 | 60.4 % |
+| A | A1b | 96 | 58 | 21 | 17 | 60.4 % |
+| A | A2 | 96 | 43 | 17 | 36 | 44.8 % |
+| A | A3 | 72 | 31 | 12 | 29 | 43.1 % |
+| B1 | B1a | 96 | 33 | 29 | 34 | 34.4 % |
+| B1 | B1b | 96 | 60 | 24 | 12 | 62.5 % |
+| B1 | B1c | 72 | 45 | 18 | 9 | 62.5 % |
+| B1 | B1d | 96 | 52 | **0** | 44 | 54.2 % |
+| B2 | B2a | 135 | **0** | 66 | 69 | **0.0 %** |
+| B2 | B2b | 135 | 116 | 3 | 16 | 85.9 % |
+| B2 | B2c | 90 | 74 | 2 | 14 | 82.2 % |
+| C1 | C1a | 120 | 66 | 21 | 33 | 55.0 % |
+| C1 | C1b | 120 | 58 | 29 | 33 | 48.3 % |
+| C1 | C1c | 120 | 66 | 21 | 33 | 55.0 % |
+
+**Built-in check:** inside one variable every valid cell is counted exactly once, so the malicious
+column must always add up to 190. The script prints this (`valid cells with malicious_resolved
+result: 190`). If I ever point the script at a different `results.csv` and the number changes, I see
+it immediately instead of pasting a wrong table into the thesis. Same idea as the count block at the
+end of the Figure C script.
+
+**What I am allowed to claim from this table - the 0 %/100 % rule.** The analysis unit is the
+configuration *combination* and the variables interact, so a rate like "B1b = 62.5 %" is only an
+average over an unbalanced set of values of the other variables. It cannot support "B1b causes the
+attack". A marginal of exactly **0** or exactly **100** in a complete factorial is a different kind
+of statement: it is universally quantified over the whole space, and no interaction can hide inside
+it. So the table is **descriptive orientation only**, and exactly two entries carry a claim:
+
+- **B2a = 0 of 135.** Not "pinning helps on average" but: *in every one of the 135 pinned cells,
+  across all three ecosystems and all A, B1 and C1 combinations, the attack never succeeded.*
+- **B1d = 0 private.** Under the default configuration a cell is either compromised or the build
+  breaks - it is never safely resolved. This is the fail-closed point in concrete form: blocking or
+  not configuring public access does not defend the build, it breaks it.
+
+Also to be stated once in the chapter: the options have **unequal n** (A3 = 72 not 96, B2c = 90 not
+135) because of the invalidity rules, so the rates are shares of *valid* cells and are not
+comparable across options without that caveat. And **no significance testing** - this is an
+exhaustive deterministic census of the defined space with verified run-to-run reproducibility, so
+there is no sampling variability and chi-square / p-values / confidence intervals would be
+meaningless.
+
+---
+
+## 3. Step 6, second result: A1a and A1b are identical in all 96 comparable cells
+
+`compare_A1a_A1b()` uses the dictionary that `read_results()` already builds, keyed by
+`(ecosystem, A, B1, B2, C1)`. For every valid A1a cell it rebuilds the same key with `"A1b"` and
+compares the two classifications - so exactly one variable differs between the two cells of a pair.
+
+```
+A1a / A1b valid cells are compared  96  times
+A1a / A1b cells have difference result:  0
+```
+
+**Why 96 and not 108:** there are 3 ecosystems x 4 B1 x 3 B2 x 3 C1 = 108 A1a cells, but 12 of them
+are Maven x B2c, which is not expressible in a POM. 108 - 12 = 96, and the loop runs only over valid
+rows. **Why the partner cell always exists:** the two invalidity rules are Maven x B2c and A3 x B1c,
+and neither mentions A1a or A1b - so both cells of a pair are always valid together or invalid
+together. I never compare a valid cell against an invalid one.
+
+**Mechanism (needed - a pattern without a mechanism is not a result):** a Nexus group repository does
+not try its members in order and stop at the first hit. It **merges the version metadata of all
+members**, and the package manager then picks the highest version. Member order therefore only
+decides between members offering the *same* version. The attacker's 1.0.3 is strictly higher than
+1.0.0 / 1.0.2, so it wins no matter which member is listed first. Evidence I can quote next to this:
+the Maven log fetches one merged `maven-metadata.xml` from the group URL and then evaluates the
+candidate `.pom` files.
+
+**Consequence:** "just put the private registry first in the group" is **not** a mitigation. This
+also directly qualifies the "virtual repository-side" attack type from Gu et al. in section 5.3.1.
+
+This result survives the objection against the table above, because it is **not an average**: it is
+96 individual comparisons, each of which came out equal - a pointwise identity.
+
+---
+
+## 4. Step 7a - how I actually found the rule (question by question)
+
+This is the part I have to be able to defend, so it is written as the sequence of questions I asked.
+I started from the only claim-bearing entry in the table.
+
+### Q1: pinning is *necessary* - is it also *sufficient*?
+
+The table says: no B2a cell was ever compromised. The honest next question is the reverse direction:
+**are all not-pinned cells (B2b, B2c) compromised?** I did not know the answer before counting, and
+it had to be asked, because if it were "yes" the rule would already be finished with one condition.
+
+`check_not_pinned_cells()` counts the cells with `B2 != "B2a"`, splits them into malicious and
+not-malicious, and returns the not-malicious ones for the next question.
+
+```
+number of not pinned valid cells (have B2b or B2c): 225
+Number of not pinned valid cells with result malicious_resolved: 190
+Number of cells which don't have result malicious_resolved result: 35
+in these 35 cells,  5 has result private_resolved.  30 cells has result resolution_error
+```
+
+**Answer: no.** 190 of 225, not 225 of 225. So a second condition must exist, and those **35 cells
+are where it hides**.
+
+Two numbers worth keeping from this output:
+
+- Of the 225 not-pinned cells, **30 failed to build**, leaving **195 that produced a result**, and
+  **190 of those 195 = 97.4 %** got the attacker's package. In plain words: *once you stop pinning,
+  if your build still works, it almost certainly installed the attacker's package.*
+- The 35 split into **30 resolution_error + 5 private_resolved**. This **corrects a stale line in my
+  analysis plan file**, which says "35 (31 errors + 4 private)". Every other number in that plan
+  (195, 190, the five-cell list) already assumes 30 + 5, so only that one line is wrong. Correct it.
+
+The private/error split matters on its own: the cells that are not compromised are mostly not
+*defended*, they are **broken**. `resolution_error` must therefore never be merged with
+`private_resolved` as "safe".
+
+### Q2: what do those 35 cells have in common?
+
+Idea: build the same per-variable table again, but only inside the 35 cells. `count_one_variable_option()`
+takes any list of rows, so `group_cells_by_variable()` just points it at the 35 instead of at all 360.
+
+```
+   A A1a : 2      B1 B1a : 27      B2 B2a : 0       C1 C1a : 9
+   A A1b : 2      B1 B1b : 0       B2 B2b : 19      C1 C1b : 17
+   A A2  : 17     B1 B1c : 0       B2 B2c : 16      C1 C1c : 9
+   A A3  : 14     B1 B1d : 8
+```
+
+Reading: B1 is clearly involved - **27 of 35 are B1a**, and **B1b and B1c contribute 0**, which is
+consistent, because those two always have a public path. A is not evenly spread either (A2 = 17,
+A3 = 14, but A1a and A1b only 2 each). C1 is spread over all three options, so C1 is not the cause.
+
+### Q3: is B1a alone the condition? No - so check the combination
+
+This was the reasoning step where I could have gone wrong. "27 of the 35 are B1a" does **not** mean
+"B1a implies safe" - that is only one direction. The Step 6 table says **33 of 96 B1a cells are
+malicious**, so B1a on its own clearly does not protect anything. It must be B1a *in combination*
+with something else.
+
+`group_cells_by_A_and_B1()` counts the 35 cells per (A, B1) combination, using a dictionary where the
+key is the combination and the value is how often it occurs:
+
+```
+   A = A1a  B1 = B1d  cells: 2
+   A = A1b  B1 = B1d  cells: 2
+   A = A2   B1 = B1a  cells: 15
+   A = A2   B1 = B1d  cells: 2
+   A = A3   B1 = B1a  cells: 12
+   A = A3   B1 = B1d  cells: 2
+```
+
+Two groups fall out:
+
+- **27 cells = B1a combined with A2 or A3.** One single registry URL, pointing at the internal
+  hosted repository: no public registry, no proxy, no group member. The attacker's 1.0.3 exists only
+  on the public registry, so in these cells it is **never even a candidate**. That is a mechanism,
+  not a correlation, and it becomes **condition 2: the resolver must be able to reach a public
+  source**.
+- **8 cells = B1d, spread 2 / 2 / 2 / 2 over all four A options.** That evenness is the tell: A is
+  irrelevant to them, so this is not a registry-topology effect at all and cannot belong to
+  condition 2. Handled in Q5.
+
+### Q4: does condition 2 hold in the other direction?
+
+Same trap as Q3, so I checked it explicitly: I had shown "these safe cells are A2/A3 x B1a", but not
+"all not-pinned A2/A3 x B1a cells are safe". `check_combination()` counts, among **all** not-pinned
+cells of one (A, B1) combination, how many are malicious after all, and prints the cell ids.
+
+```
+A = A2  B1 = B1a  not pinned cells: 15  in these cells,  0 has result malicious resolved
+   still malicious: mvn_A3_B1a_B2b_C1a
+   still malicious: mvn_A3_B1a_B2b_C1b
+   still malicious: mvn_A3_B1a_B2b_C1c
+A = A3  B1 = B1a  not pinned cells: 15  in these cells,  3 has result malicious resolved
+```
+
+- **A2 x B1a: 15 of 15 clean.** Condition 2 holds perfectly here.
+- **A3 x B1a: 12 of 15** - three cells escape, all Maven, all B2b.
+
+**These three are exception 1, and I already know the mechanism from my 09.08 entry:** under A3 x B1a
+the repository entry uses `maven-internal-hosted` as its ID, so it does **not** override the
+super-POM's `central`, and the real Maven Central leaks in as an additional repository. So these
+cells do not contradict condition 2 - they *satisfy* it: the resolver could reach a public source
+after all, even though the A and B1 labels suggest it could not. It must be written up as an
+**implementation consequence of my own `id=central` design decision, not as an intrinsic Maven
+property**. Only B2b appears because Maven cannot express B2c at all.
+
+### Q5: the 8 leftover cells
+
+`print_cells_of_B1_option()` prints them one by one:
+
+```
+    pip_A1a_B1d_B2b_C1b resolution_error      pip_A2_B1d_B2b_C1b resolution_error
+    pip_A1a_B1d_B2c_C1b resolution_error      pip_A2_B1d_B2c_C1b resolution_error
+    pip_A1b_B1d_B2b_C1b resolution_error      pip_A3_B1d_B2b_C1b resolution_error
+    pip_A1b_B1d_B2c_C1b resolution_error      pip_A3_B1d_B2c_C1b resolution_error
+```
+
+All pip, all B1d, all C1b - **exception 2**, and it is section 0.5 of the analysis plan. In C1b the
+setup phase installs the fixed `1.0.0` using the cell's own `pip.conf`; under B1d that version is
+unreachable, so the setup fails and phase 2 never runs. **The cell never reached the operation under
+test.** That is a property of my harness design, not of PyPI - and the proof is that the same
+coordinates come out `malicious_resolved` under C1a and C1c. It must be labelled as a harness
+artefact in the thesis, otherwise it becomes a false ecosystem finding.
+
+---
+
+## 5. The rule, and the test against all 360 cells
+
+> A dependency confusion attack succeeds **if and only if** both hold:
+> 1. the version specifier is **not pinned** (B2b or B2c), **and**
+> 2. the resolver **can reach a public source** - directly, through the Nexus proxy, or through a
+>    group repository that has a public member.
+>
+> Condition 2 fails only when the package manager points at a single repository with no public
+> upstream (B1a with A2 or A3). Two named exceptions:
+> - **Maven A3 x B1a still reaches Central** (`id=central` override, an implementation consequence
+>   of my design decision from 09.08, not an intrinsic Maven property);
+> - **pip B1d x C1b never reaches phase 2** (harness artefact, section 0.5, not a PyPI result).
+
+`rule_about_malicious(row)` writes this as four blocks that return `True` / `False` for one cell.
+**The order of the blocks matters and is not arbitrary:** exception 1 must stand *before* condition 2,
+because a Maven A3 x B1a cell matches both, and the exception is the more specific statement. Python
+returns at the first match, so the more specific rule has to come first.
+
+`test_rule()` asks the rule for every one of the 360 valid cells and compares its answer with the
+real classification:
+
+```
+cells tested: 360
+cells where the rule is wrong: 0
+```
+
+It also writes `sub-RQ1_result/analysis/step7_rule_misclassifications.csv`. That file now contains
+**only its header row**, and that is exactly the result: it is the auditable form of "0 mistakes",
+and anyone can re-run the script and get the same empty file. A rule is only accepted at 0.
+
+---
+
+## 6. The academic caveat about this rule (must be in the thesis)
+
+The rule was **derived from the same 360 cells it was tested on**. That is *not* independent
+validation and must not be described as if it were. It is legitimate here only because those 360
+cells are not a sample - they are the **complete population** of the defined configuration space, so
+there is no held-out set to validate against and none is needed.
+
+
+
+---
+
+## 7. Smaller decisions made while writing the script
+
+
+- Idea worth five minutes tomorrow: a second copy of the rule function **with the two exception
+  blocks removed**, tested the same way. The number of cells it then gets wrong measures exactly what
+  the two exceptions account for, which turns "I added two exceptions" into a measured statement.
+
+---
+
+## 8. Status after today
+
+Finished: **Step 6** (per-variable table, B2a = 0 of 135, A1a = A1b in 96 of 96) and the Python half
+of **Step 7a** (rule derived, tested, 0 wrong on 360 cells).
+New files: `sub-RQ1_result/analysis/step6_7_variable_table_and_rule.py`,
+`step6_variable_table.csv`, `step7_rule_misclassifications.csv` (header only).
+
+## Next steps
+- [ ] **Excel cross-check** of today's two results (still open): PivotTable of the per-variable table,
+      and the A1a/A1b comparison via a `key = ecosystem & B1 & B2 & C1` helper column + VLOOKUP.
+      Must give the same 14 rows and the same 0 differences out of 96. If Excel and Python disagree,
+      the disagreement is the finding.
+- [ ] **Step 7b** (schedule day 4): minimal-pair table + the write-up of the 5 non-pinned but safe
+      cells as a **positive control**. Today's data already staged it - those 5 cells resolved
+      **1.0.2, not 1.0.0**, which proves "highest version wins" was fully active and the attack failed
+      *only* because the attacker was unreachable.
+- [ ] Fix the stale "31 errors + 4 private" line in the analysis plan file - it is **30 + 5**.
+- [ ] Tick step 6 + 7a as done in `docs/summary_result_analysis.md` section 6.
