@@ -3392,3 +3392,179 @@ correct):
       (table, A1a/A1b, not-pinned question, grouping, both-direction check, leftovers, rule test).
 - [ ] Step 7b: the function for the 5 cells (section 3), then the minimal-pair table.
 - [ ] Excel cross-check of the per-variable table and the A1a/A1b comparison (still open from 10.09).
+
+## part 2: Step 7b started - investigated the 5 not-pinned cells with result "private_resolved"
+
+Afternoon. Started Step 7b (schedule day 4). Wrote the function that prints the 5 cells, then went
+into the artifact files of two of them to find the **root cause** of why they resolved 1.0.2 - because
+`results.csv` only shows *what* was resolved, not *how*. The important findings are in section 3.
+the minimal-pair table is not started.
+
+## 1. Decision: Figure D - yes, but as stacked counts, not as rates
+
+Figure D is simple to build (one `ax.barh` panel from `step6_variable_table.csv`, same matplotlib
+pattern as Figure C, ~1 hour). Decided to build it **later, after Step 7b**, and to build the
+**stacked version** (per variable option: how many cells have result malicious_resolved /
+private_resolved / resolution_error) instead of the "attack success rate" version from the plan.
+Reason: the intermediate rates (60.4 %, 44.8 %, ...) carry no claim (0 %/100 % rule, 10.09 part 2
+section 2), and a bar chart of rates would make them look like effects. The stacked version shows
+the two things that *do* carry a claim: the B2a bar has no malicious_resolved part at all, and the
+B1d bar has no private_resolved part at all.
+
+## 2. New function `print_not_pinned_private_cells(valid_rows, results)`
+
+Added to `step6_7_variable_table_and_rule.py`, called last in `main()`. It filters the 360 valid
+cells to `B2 != "B2a"` and `classification == "private_resolved"` and prints, per cell: the resolved
+version of both internal packages, the Nexus repository name taken out of `pk1_url` (the URL is cut
+at `/repository/` and the next path segment is the name), and the classification of the **same A, B1,
+B2 under C1a and under C1c** (looked up in the `results` dictionary from `read_results()`).
+The first version printed the whole URL and was unreadable; rewritten with one labelled line per
+fact and a short "how to read this" footer.
+
+Output (5 cells):
+
+| cell | resolved version | from Nexus repository | same config under C1a | same config under C1c |
+|---|---|---|---|---|
+| `mvn_A2_B1a_B2b_C1b` | 1.0.2 / 1.0.2 | `maven-internal-hosted` | resolution_error | resolution_error |
+| `npm_A2_B1a_B2b_C1b` | 1.0.2 / 1.0.2 | `npm-internal-hosted` | resolution_error | resolution_error |
+| `npm_A2_B1a_B2c_C1b` | 1.0.2 / 1.0.2 | `npm-internal-hosted` | resolution_error | resolution_error |
+| `npm_A3_B1a_B2b_C1b` | 1.0.2 / 1.0.2 | `npm-internal-hosted` | resolution_error | resolution_error |
+| `npm_A3_B1a_B2c_C1b` | 1.0.2 / 1.0.2 | `npm-internal-hosted` | resolution_error | resolution_error |
+
+What this table shows: all 5 cells have C1b; the same configuration under C1a and C1c does not complete (resolution error).
+They resolved 1.0.2 (higher version of internal packages), not 1.0.0 (what was installed before), from the
+internal hosted repository. What it does **not** show is *why* - that needed the artifact files.
+
+## 3. Root cause from the artifact files (the important part)
+
+Looked at one npm cell and the Maven cell by hand - the other three npm cells are the same
+configuration family. Folder: `sub-RQ1_result/0809/artifact_download/<cell_id>/`.
+
+### 3.1 npm - `npm_A2_B1a_B2b_C1b`
+
+- **`npm_A2_B1a_B2b_C1b_npm_log.txt` (87 bytes) contains no useful information.** Complete content:
+  `up to date in 626ms` + the funding notice. npm prints nothing about which registry it asked or
+  which versions it saw. (A re-run with `--loglevel verbose` would print one `http fetch GET 200
+  <url>` line per request. Not re-running the experiment for this; if a trace is wanted, do a
+  one-off manual reproduction of one cell and label it as a supplementary check, not as experiment
+  data.)
+- **The evidence is the lockfile pair.** `npm_A2_B1a_B2b_C1b_setup-package-lock.json` (phase 1,
+  before the update) has both internal packages at **1.0.0**; `package-lock.json` (phase 2, after
+  `npm update`) has both at **1.0.2** with `resolved` URLs in `npm-internal-hosted`.
+- **Why 1.0.2 and not 1.0.0** cannot be read from the log; it comes from the documented behaviour
+  of `npm update` with a range specifier (it installs the highest version that satisfies the range).
+  Cite the npm documentation page for `npm update`, not an inference. The lockfile change
+  1.0.0 -> 1.0.2 is the observation that matches the documented behaviour.
+- **Why 1.0.3 was not chosen:** the only registry in this cell's configuration is
+  `npm-internal-hosted`, which does not contain 1.0.3 
+- Still to check (not done today): the `express` entry in both lockfiles should be byte-identical,
+  which would show that `npm update <pkg1> <pkg2>` re-resolved only the two named packages and
+  never touched the public dependencies. That is why the build completed under C1b although the
+  public packages are unreachable from `npm-internal-hosted`. The C1a sibling log
+  (`npm_A2_B1a_B2b_C1a_npm_log.txt`) should show which public package fails and against which URL.
+
+### 3.2 Maven - `mvn_A2_B1a_B2b_C1b`
+
+**Phase 1 (`_mvn_setup_log.txt`, 288 KB):** Maven first downloads the `.pom` of every dependency,
+then the `.jar` files; every finished download gets a line `... (xx kB at xx kB/s)`. Only **1.0.0**
+of both internal packages is downloaded - no 1.0.2, no 1.0.3 - which matches the pinned setup POM.
+`_setup-lockfile.json` also records 1.0.0 for both.
+
+**Phase 2 (`_mvn_log.txt`, 20 KB), lines 6-18 - the version selection made visible:**
+
+```
+Downloading from central: http://host.docker.internal:8081/repository/maven-internal-hosted/.../xueting-thesis-event-juhe/maven-metadata.xml
+Downloaded  from central: ... maven-metadata.xml (364 B at 3.3 kB/s)
+Downloading from central: http://host.docker.internal:8081/repository/maven-internal-hosted/.../xueting-thesis-event-juhe/1.0.2/xueting-thesis-event-juhe-1.0.2.pom
+```
+
+Maven downloads `maven-metadata.xml` (that file *is* the version list of the repository) and the
+very next download is the **1.0.2** `.pom` - not 1.0.0, not 1.0.3. This two-line sequence is the
+version computation: read the list, take the highest version inside the range `[1.0.0,2.0.0)`.
+Maven does not print the computation itself (`mvn -X` would), but it is not needed: 1.0.3 cannot
+appear because the list came from `maven-internal-hosted`, which does not contain it. Cite Maven's
+version-range documentation for the "highest in range" rule.
+
+**Proof that the public dependencies came from the local repository (`~/.m2`) in phase 2 - by
+absence.** Maven logs *every* remote download, so counting is enough:
+
+| | phase 1 (setup) log | phase 2 log |
+|---|---|---|
+| `Downloaded from ... javalin` lines | **3** (from `maven-group-public-first`, the repository hard-coded in the setup POM) | **0** |
+| completed downloads from `repo.maven.apache.org` | - | **0** |
+| completed downloads in total | many | **6**, all internal packages from `maven-internal-hosted` |
+
+Nothing public was downloaded in phase 2, yet the build resolved `javalin` - so it came from the
+local repository filled in phase 1. Together with the empty `resolved` field of the public
+dependencies in `_lockfile.json` (08.09 entry, point 3) this is two independent pieces of evidence.
+So yes, it is proven, and no extra logging option is needed.
+
+### 3.3 The two "Maven Central" lines in phase 2 - explained, not a leak
+
+Lines 131 and 133 of the phase-2 log looked like a contradiction of the A2 x B1a isolation:
+
+```
+[INFO] Downloading from central: https://repo.maven.apache.org/maven2/org/eclipse/jetty/tests/jetty-test-multipart/12.1.8/jetty-test-multipart-12.1.8.pom
+[WARNING] The POM for org.eclipse.jetty.tests:jetty-test-multipart:jar:12.1.8 is missing, no dependency information available
+[INFO] Downloading from central: https://repo.maven.apache.org/maven2/org/eclipse/jetty/tests/jetty-test-multipart/12.1.8/jetty-test-multipart-12.1.8.jar
+```
+
+Three observations:
+
+1. Both are `Downloading` **without** a matching `Downloaded` line, followed by "POM ... is missing".
+   The requests **failed**. 0 completed downloads from `repo.maven.apache.org` in the whole log.
+2. The artifact is `jetty-test-multipart`, a transitive test artifact - not `javalin`, not
+   `jackson`, not a project dependency. The surrounding `[WARNING] Artifact checksum ... not found
+   in any configured remote repository` lines show this is the lockfile plugin's checksum lookup
+   during `configurator:generate`, not the project's dependency resolution.
+3. The URL is the real Maven Central although the label is `central` - the same label the project
+   dependencies use for `host.docker.internal:8081`. So there are **two different "central"s**.
+
+**Why two "central"s - verified with my own earlier effective-POM test.**
+`effective-pom-checks/effective-A2-B1a.xml` (from the repository-ID investigation on 09.08) contains:
+
+| list in the effective POM | id | URL |
+|---|---|---|
+| `<repositories>` | `central` | `http://host.docker.internal:8081/repository/maven-internal-hosted/` |
+| `<pluginRepositories>` | `central` | `https://repo.maven.apache.org/maven2` |
+
+Maven's built-in super POM defines **two** lists, both with `id = central`: `<repositories>` for
+dependencies and `<pluginRepositories>` for plugins and what plugins need. My `<repository>
+<id>central</id>` override in the cell's `pom.xml` replaces only the entry in the first list (same id
+-> same entry replaced). The second list is inherited unchanged, so plugin-side resolution still
+knows the real Central. I never configure a `<pluginRepositories>` block in pom.xml file - it is there because every
+project inherits it (from SuperPOM). Reference to cite: the super-POM page of the Maven model builder documentation
+(`maven.apache.org/ref/3.9.x/maven-model-builder/super-pom.html`).
+
+Note on what is proven and what is not: the effective POM proves the second list exists in this
+cell; it does not prove that lines 131/133 went through it (only `mvn -X` would show that). It is
+the obvious path and I will write it as such.
+
+**Consequences:**
+- No result is affected: the requests failed, the artifact is not a project dependency, and no
+  project dependency was fetched from Central in phase 2.
+- The isolation claim for A2 x B1a becomes sharper: the *dependency* candidate set was strictly
+  `maven-internal-hosted` - which is why 1.0.3 was never a candidate - while the plugin path is not
+  part of the dependency resolution the attack targets.
+- This is the second half of the 09.08 `id=central` story and belongs next to it in the
+  implementation chapter (the override is per repository list, not global). Limitation note for
+  section 7.4, not a finding.
+
+## 4. What the three claims for the 5 cells rest on now
+
+| claim | Maven evidence | npm evidence |
+|---|---|---|
+| the candidate set contained no 1.0.3 | phase-2 log: metadata and all downloads from `maven-internal-hosted` only | lockfile `resolved` URLs: `npm-internal-hosted` only |
+| the resolver chose the highest version it could see | metadata-then-`1.0.2.pom` sequence in the phase-2 log + Maven version-range docs | lockfile change 1.0.0 -> 1.0.2 + npm `update` docs (no log trace) |
+| the build completed only because the public dependencies did not need to be resolved | 3 `javalin` downloads in phase 1, 0 in phase 2; empty `resolved` in `_lockfile.json` | **still to check**: `express` entry identical in both lockfiles |
+
+## Next steps
+- [ ] npm: compare the `express` entry in `_setup-package-lock.json` and `package-lock.json` of
+      `npm_A2_B1a_B2b_C1b`; read the C1a sibling log. Then the npm row of the table above is complete.
+- [ ] Put the two lockfile comparisons into a small separate script
+      (`step7b_five_cells_evidence.py`) so they are reproducible; keep the log excerpts as quotes
+      with file name and line number. Do not script the log reading.
+- [ ] Look up and cite: npm `update` range behaviour; Maven version-range selection; Maven super POM.
+- [ ] Minimal-pair table (the rest of Step 7b).
+- [ ] Figure D, stacked version (section 1).
+- [ ] Excel cross-check of the per-variable table and the A1a/A1b comparison (still open).
