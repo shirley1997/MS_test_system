@@ -3568,3 +3568,524 @@ the obvious path and I will write it as such.
 - [ ] Minimal-pair table (the rest of Step 7b).
 - [ ] Figure D, stacked version (section 1).
 - [ ] Excel cross-check of the per-variable table and the A1a/A1b comparison (still open).
+
+# 14.09.2026 - sub-RQ1 result analysis: find root cause of the 5 not-pinned "private_resolved" cells (evidence from the artifact files), build minimal-pair table
+
+Finished the open items of Step 7b from 11.09: read the npm and Maven artifact
+files of the 5 not-pinned cells with result `private_resolved`, made the lockfile comparisons
+reproducible in script `step7b_five_cells_evidence.py`, collected the documentation that supports each
+claim, found out what an empty `resolved` field in the Maven lockfile *really* means (it corrects my
+earlier reading), and built the minimal-pair table in `step7b_minimal_pairs_table.py`.
+
+
+---
+
+## 1. (Maven cells) why does `maven-metadata.xml` only appear in the phase-2 log? (variable: C1b)
+
+I searched both Maven console logs of `mvn_A2_B1a_B2b_C1b` for `maven-metadata.xml`. It appears **only in
+phase 2**
+
+- **Phase 1** (setup, initial install) uses the fixed POM with the version **pinned to 1.0.0**. Maven already knows the
+  exact version, so it asks directly for `.../1.0.0/xueting-thesis-event-juhe-1.0.0.pom`. It never
+  needs to find out which versions exist.
+- **Phase 2** (package update) uses the cell's own POM with the **version range `[1.0.0,2.0.0)`**. Now Maven
+  has to find out which versions exist before it can choose one. That list is `maven-metadata.xml`.
+  It downloads the list, then the version it chose: 1.0.2. (because the own POM configured repository "maven-internal-hosted")
+
+So the metadata download is the **fingerprint of range resolution**: it only appears when the
+version is not pinned, and *where it was downloaded from* tells me the versions Maven found. Here it came
+from `maven-internal-hosted` only - a repository that does not contain attacker package version 1.0.3.
+
+**Can the metadata line replace the `~/.m2` evidence? No** - the two answer different questions:
+
+| question | evidence |
+|---|---|
+| why 1.0.2 was chosen (not 1.0.0, not 1.0.3) | metadata downloaded from `maven-internal-hosted`, followed by the `1.0.2.pom` download |
+| why the build completed at all, although `javalin` / `jackson` do not exist in `maven-internal-hosted` | `javalin` downloaded in phase 1, **nothing** downloaded for it in phase 2 -> it came from the local repository `~/.m2`, which javalin is stored there in phase 1 |
+
+The metadata explains the *version*. The `~/.m2` evidence explains why the build succeeded instead of "resolution error". Both are evidence.
+
+---
+
+## 2. npm - `npm_A2_B1a_B2b_C1b` (representative for the 4 npm not-pinned cells with "private resolved")
+
+ Files:
+`npm_A2_B1a_B2b_C1b_npm_log.txt` , `npm_A2_B1a_B2b_C1b_setup-package-lock.json`
+(phase 1 = before the update), `package-lock.json` (phase 2 = after `npm update`).
+
+### 2.1 The log has no useful information
+
+Complete content of the log:
+
+```
+up to date in 626ms
+
+25 packages are looking for funding
+  run `npm fund` for details
+```
+
+npm prints nothing about which registry it asked or which versions it saw. The reason is in the npm
+documentation (section 4): with `--package-lock-only`, `npm update` only rewrites
+`package-lock.json` and does not download anything. A re-run with `--loglevel verbose` would print
+one `http fetch GET 200 <url>` line per request - **not re-running the experiment for this**. If a
+trace is ever wanted, do a one-off manual reproduction of one cell and label it as a supplementary
+check, not as experiment data.
+
+### 2.2 observe and compare Lockfile from 2 phases manually
+
+In `_setup-package-lock.json` (phase 1):
+
+```
+"node_modules/express": {
+  "version": "5.2.1",
+  "resolved": "https://registry.npmjs.org/express/-/express-5.2.1.tgz",
+
+"node_modules/xueting-thesis-event-jianding": {
+  "version": "1.0.0",
+  "resolved": "http://localhost:8081/repository/npm-group-public-first/xueting-thesis-event-jianding/-/xueting-thesis-event-jianding-1.0.0.tgz",
+```
+
+In `package-lock.json` (phase 2):
+
+```
+"node_modules/express": {
+  "version": "5.2.1",
+  "resolved": "https://registry.npmjs.org/express/-/express-5.2.1.tgz",
+
+
+"node_modules/xueting-thesis-event-jianding": {
+  "version": "1.0.2",
+  "resolved": "http://host.docker.internal:8081/repository/npm-internal-hosted/xueting-thesis-event-jianding/-/xueting-thesis-event-jianding-1.0.2.tgz",
+```
+
+The internal package was updated (1.0.0 -> 1.0.2, now from `npm-internal-hosted`); the public dependency `express` has
+exactly the same URL as in phase 1 (does not change).
+
+### 2.3 The C1a sibling log - why C1a fails but C1b completes (with result "private_resolved")
+
+`npm_A2_B1a_B2b_C1a/npm_A2_B1a_B2b_C1a_npm_log.txt` :
+
+```
+...
+npm error 404 Not Found - GET http://host.docker.internal:8081/repository/npm-internal-hosted/express - Package 'express' not found
+npm error 404
+npm error 404  The requested resource 'express@^5.2.1' could not be found or you do not have permission to access it.
+...
+```
+
+No lockfile is uploaded for this cell because the phase 1 failed, so this cell has result`resolution_error`.
+
+**My explanation (should be writtn as argument in thesis):** C1a is an initial install - to build
+successfully, *every* package listed in `package.json` must be resolved, and public dependency `express` does not
+exist in `npm-internal-hosted`, so the build fails with 404. 
+
+C1b (package update) in npm targets only the two
+internal packages (`npm update <pkg1> <pkg2>`), so the
+update succeeds without touching the public dependencies. The `express` entry is the same in both lockfiles ( before and after)  -> evidence
+
+### 2.4 Reproducible: `compare_npm_lockfiles()` in `step7b_five_cells_evidence.py`
+
+Opens both lockfiles with `json.load`, reads the `"packages"` section (every installed package,
+keyed by its path under `node_modules/`), and prints package `version` and `resolved` before and after for
+the packages I name. `before == after` compares the both entries, if they are identical then print "unchanged"
+
+Output:
+
+```
+[cell]: npm_A2_B1a_B2b_C1b
+[dependency name]:    xueting-thesis-event-jianding
+        phase 1 (before update): 1.0.0 http://localhost:8081/repository/npm-group-public-first/xueting-thesis-event-jianding/-/xueting-thesis-event-jianding-1.0.0.tgz
+        phase 2 (after update):  1.0.2 http://host.docker.internal:8081/repository/npm-internal-hosted/xueting-thesis-event-jianding/-/xueting-thesis-event-jianding-1.0.2.tgz
+-> entry (package version / resolved URL) CHANGED
+[dependency name]:    xueting-thesis-service-fasong
+        phase 1 (before update): 1.0.0 http://localhost:8081/repository/npm-group-public-first/xueting-thesis-service-fasong/-/xueting-thesis-service-fasong-1.0.0.tgz
+        phase 2 (after update):  1.0.2 http://host.docker.internal:8081/repository/npm-internal-hosted/xueting-thesis-service-fasong/-/xueting-thesis-service-fasong-1.0.2.tgz
+-> entry (package version / resolved URL) CHANGED
+[dependency name]:    express
+        phase 1 (before update): 5.2.1 https://registry.npmjs.org/express/-/express-5.2.1.tgz
+        phase 2 (after update):  5.2.1 https://registry.npmjs.org/express/-/express-5.2.1.tgz
+-> entry (package version / resolved URL) not change
+```
+
+TODO: check for the other 3 npm cells (not-pinned, have result "private_resolved") too
+
+### 2.5 question 2: why is `express` in the fixed lockfile from `registry.npmjs.org` and not from the group repository?
+
+Checked the fixed file itself, `fixed_setup_file/npm-service-fixed-lock.json`: **all public dependencies
+entries** point to `registry.npmjs.org`; **only the 2 internal packages** point to
+`localhost:8081/repository/npm-group-public-first`. So it is not only `express`.
+
+Most likely explanation - the same mechanism I just observed: npm keeps the existing `resolved`
+URL of every entry it does not re-resolve. If the fixed lockfile was built in two steps (first the
+public dependencies installed with an ordinary `npm install` against npmjs.org, then the internal
+packages added later with `.npmrc` pointing at the group), only the two entries added in the second
+step got group URLs. The log does not record how the fixed file was created, so this stays "most
+likely" unless command `git log -- fixed_setup_file/npm-service-fixed-lock.json` is used to check it.
+
+
+---
+
+## 3. Maven - `mvn_A2_B1a_B2b_C1b`
+
+Folder: `sub-RQ1_result/0809/artifact_download/mvn_A2_B1a_B2b_C1b/`.Checked Files:
+`_mvn_setup_log.txt` (phase 1, 288 KB), `_mvn_log.txt` (phase 2, 20 KB), `_setup-lockfile.json`,
+`_lockfile.json`
+
+### 3.1 What I saw in the phase-1 log
+
+Maven first downloads the `.pom` of every dependency, then, after that is finished, the `.jar`
+files. After each finished download it writes `(xxx kB at xxx kB/s)` - the size and the download
+speed. Only **1.0.0** of both internal packages is downloaded, which matches
+the pinned package version setup in fixed POM file. `_setup-lockfile.json` also records 1.0.0 for both.
+
+### 3.2 What I saw in the phase-2 log
+
+less dependencies are downloaded: only lines 6-18 are download lines, and they find the internal packages
+with version 1.0.2:
+
+```
+[INFO] Downloading from central: http://host.docker.internal:8081/repository/maven-internal-hosted/io/github/shirley1997/thesis/xueting-thesis-event-juhe/maven-metadata.xml
+[INFO] Downloaded from central:  http://host.docker.internal:8081/repository/maven-internal-hosted/io/github/shirley1997/thesis/xueting-thesis-event-juhe/maven-metadata.xml (364 B at 3.3 kB/s)
+[INFO] Downloading from central: http://host.docker.internal:8081/repository/maven-internal-hosted/io/github/shirley1997/thesis/xueting-thesis-event-juhe/1.0.2/xueting-thesis-event-juhe-1.0.2.pom
+```
+
+Maven does not print the version computation itself (`mvn -X` would). It is not needed: the
+metadata (= the version list) came from `maven-internal-hosted`, the next download is 1.0.2 - that
+*is* the selection, and 1.0.3 cannot appear because the list does not contain it. The rule "highest
+version inside the range" is documented (section 4).
+
+Every completed download in the phase-2 log, counted: **6**, all internal packages from
+`maven-internal-hosted`. Completed downloads from `repo.maven.apache.org`: **0**.
+
+
+
+Phase-2 log (`_mvn_log.txt`):  Not one line mentions `javalin`.
+
+Maven prints a `Downloaded from` line for every file it fetches from a remote repository. Phase 1
+fetched `javalin`; phase 2 fetched nothing for it - but the build is successful. The only place it can
+have come from is the local repository `~/.m2`, filled by phase 1. Quote lines 12 and 156 with their
+line numbers in the thesis.
+
+### 3.4 Reproducible: `compare_maven_lockfiles()` in `step7b_five_cells_evidence.py`
+
+The Maven lockfile is JSON with a `"dependencies"` list; each entry has `artifactId`, `version`,
+`repositoryId`, `resolved`. Output:
+
+```
+[cell]: mvn_A2_B1a_B2b_C1b - phase 1 (setup phase, initial install)
+[dependency name]:    jackson-databind  [version]: 2.21.2  [resolved]: http://host.docker.internal:8081/repository/maven-group-public-first/com/fasterxml/jackson/core/jackson-databind/2.21.2/jackson-databind-2.21.2.jar
+[dependency name]:    xueting-thesis-event-juhe  [version]: 1.0.0  [resolved]: http://host.docker.internal:8081/repository/maven-group-public-first/io/github/shirley1997/thesis/xueting-thesis-event-juhe/1.0.0/xueting-thesis-event-juhe-1.0.0.jar
+[dependency name]:    xueting-thesis-result-fanhui  [version]: 1.0.0  [resolved]: http://host.docker.internal:8081/repository/maven-group-public-first/io/github/shirley1997/thesis/xueting-thesis-result-fanhui/1.0.0/xueting-thesis-result-fanhui-1.0.0.jar
+[dependency name]:    javalin  [version]: 7.2.2  [resolved]: http://host.docker.internal:8081/repository/maven-group-public-first/io/javalin/javalin/7.2.2/javalin-7.2.2.jar
+
+[cell]: mvn_A2_B1a_B2b_C1b - phase 2 (package update)
+[dependency name]:    jackson-databind  [version]: 2.21.2  [resolved]: (this field is empty - which means it's not downloaded from a remote repository)
+[dependency name]:    xueting-thesis-event-juhe  [version]: 1.0.2  [resolved]: http://host.docker.internal:8081/repository/maven-internal-hosted/io/github/shirley1997/thesis/xueting-thesis-event-juhe/1.0.2/xueting-thesis-event-juhe-1.0.2.jar
+[dependency name]:    xueting-thesis-result-fanhui  [version]: 1.0.2  [resolved]: http://host.docker.internal:8081/repository/maven-internal-hosted/io/github/shirley1997/thesis/xueting-thesis-result-fanhui/1.0.2/xueting-thesis-result-fanhui-1.0.2.jar
+[dependency name]:    javalin  [version]: 7.2.2  [resolved]: (this field is empty - which means it's not downloaded from a remote repository)
+```
+
+All 4 are the direct dependencies declared in `pom.xml`. Phase 1: all 4 from
+`maven-group-public-first`. Phase 2: the 2 internal packages at 1.0.2 from `maven-internal-hosted`;
+the 2 public dependencies have an **empty** `resolved` (and empty `repositoryId`).
+
+**The text in parentheses in this output is my interpretation and it turned out to be imprecise -
+see section 5.** The script text must be changed.
+
+---
+
+## 4. official documentation that supports the claims 
+
+### 4.1 npm `update` - highest version inside the range; only the named packages
+
+Source: npm docs, `npm update` (CLI v11) - https://docs.npmjs.com/cli/v11/commands/npm-update
+
+> "This command will update all the packages listed to the latest version (specified by the `tag`
+> config), respecting the semver constraints of both your package and its dependencies (if they
+> also require the same package)."
+
+> "If no package name is specified, all packages in the specified location (global or local) will
+> be updated."
+
+
+
+> "So the highest-sorting version that satisfies `~1.1.1` is used, which is `1.1.2`."
+
+For the flag I use, npm docs, config -> `package-lock-only` -
+https://docs.npmjs.com/cli/v11/using-npm/config#package-lock-only
+
+> "If set to true, the current operation will only use the `package-lock.json`, ignoring
+> `node_modules`. For `update` this means only the `package-lock.json` will be updated, instead of
+> checking `node_modules` and downloading dependencies."
+
+This last sentence is also why the npm log is empty and why nothing was downloaded.
+
+### 4.2 Maven - highest version inside a range
+
+Source: Maven POM Reference, "Dependency Version Requirement Specification" -
+https://maven.apache.org/pom.html#dependency-version-requirement-specification
+
+> "[1.0,2.0): 1.0 <= x < 2.0; Hard requirement for any version between 1.0 inclusive and 2.0
+> exclusive."
+
+> "Maven picks the highest version of each project that satisfies all the hard requirements of the
+> dependencies on that project."
+
+### 4.3 Maven - the super POM has two lists, both with id `central`
+
+Maven superPOM has repositores and PluginRepositories blocks, i didn't setup (override) PluginRepositories block because it is not research-relevant, so PluginRepositories can access Maven central
+
+Source: Maven Model Builder, Super POM (3.9.9) -
+https://maven.apache.org/ref/3.9.9/maven-model-builder/super-pom.html
+
+> "All models implicitly inherit from a super-POM:"
+
+followed by both blocks: `<repositories><repository><id>central</id> ...
+<url>https://repo.maven.apache.org/maven2</url>` and `<pluginRepositories><pluginRepository>
+<id>central</id> ... <url>https://repo.maven.apache.org/maven2</url>`. Exactly what my own
+`effective-pom-checks/effective-A2-B1a.xml` shows after the override: the first list replaced by
+Nexus, the second untouched (11.09 part 2, section 3.3).
+
+### 4.4 Maven - the local repository has precedence than remote repostory 
+
+
+
+Source: Maven, Introduction to Repositories -
+https://maven.apache.org/guides/introduction/introduction-to-repositories.html
+
+Under "Artifact Repositories":
+
+> "the **local** repository is a directory on the computer where Maven runs. It caches remote
+> downloads and contains temporary build artifacts that you have not yet released."
+
+Under "Downloading from a Remote Repository":
+
+> "Downloading in Maven is triggered by a project declaring a dependency that is not present in the
+> local repository (or for a `SNAPSHOT`, when the remote repository contains one that is newer)."
+
+The second sentence is the answer.  it says a
+download is *triggered by absence* in the local repository 
+
+### 4.5 maven-lockfile plugin - what `resolved` field means (see section 5 for why this matters)
+
+Source: chains-project/maven-lockfile README -
+https://github.com/chains-project/maven-lockfile/blob/main/README.md
+
+> "In case the artifact url cannot be resolved or the checksum cannot be calculated or downloaded
+> (depending on `checksumMode`) an **empty string** will be recorded in the respective `resolved` or
+> `checksum` field."
+
+Source code: `RemoteChecksumCalculator.java` -
+https://github.com/chains-project/maven-lockfile/blob/main/src/main/java/io/github/chains_project/maven_lockfile/checksum/RemoteChecksumCalculator.java
+(read on the `main` branch, v5.18.x; my build used version **5.17.3** - the warning text matches my log, but cite the `v5.17.3` tag of the repository, not `main`).
+
+---
+
+## 5. Correction: what an empty `resolved` in the Maven lockfile REALLY means
+
+My reading so far (08.09 entry, 11.09 part 2 section 3.2, and the text in my script) was: "empty
+`resolved` = the artifact was not downloaded from a remote repository, it came from `~/.m2`". The
+README says something more specific - "cannot be resolved" - so I read the plugin source.
+
+**How the plugin fills `resolved`** (from `RemoteChecksumCalculator.java`, the mode my build uses -
+the warning `Artifact resolved url ... not found.` in my log is line 265 of that file):
+
+```java
+for (ArtifactRepository repository : buildingRequest.getRemoteRepositories()) {
+    String url = repository.getUrl().replaceAll("/$", "") + "/" + groupId + "/" + artifactId + "/"
+            + baseVersion + "/" + filename;
+    ...
+    HttpRequest request = ... .method("HEAD", HttpRequest.BodyPublishers.noBody()) ...
+    HttpResponse<Void> response = httpClient.send(request, ...);
+
+    if (response.statusCode() >= 200 && response.statusCode() < 300) {
+        RepositoryInformation result =
+                new RepositoryInformation(ResolvedUrl.of(url), RepositoryId.of(repository.getId()));
+        return Optional.of(result);
+    }
+}
+PluginLogManager.getLog().warn(String.format("Artifact resolved url `%s` not found.", artifact));
+resolvedCache.put(cacheKey, RepositoryInformation.Unresolved());
+```
+
+In words: **the plugin computes `resolved` itself, independently of what Maven downloaded.** For
+every repository configured in the POM, in order, it sends an HTTP **HEAD** request for the
+artifact file. The first repository that answers 2xx becomes `resolved` / `repositoryId`. If none
+does, the field stays empty and the warning is printed. My phase-2 log contains exactly those
+warnings (70 of them in total, among them):
+
+```
+[WARNING] Artifact resolved url `com.fasterxml.jackson.core:jackson-databind:jar:2.21.2:compile` not found.
+[WARNING] Artifact resolved url `io.javalin:javalin:jar:7.2.2:compile` not found.
+```
+
+**Correct explanation of the empty field:** *the plugin asked every configured remote repository - in
+A2 x B1a that is only `maven-internal-hosted` - and the public dependencies dont exists in this repository.* That is
+not the same as "it was not downloaded". But it is the also a statement for my argument: the
+lockfile itself proves that `javalin` and `jackson-databind` were **unreachable** from this cell's
+configuration - and the build succeeded anyway. The proof that they came from `~/.m2` is the
+*log* (no `Downloaded` line in phase 2, lines 12/156 in phase 1, section 3.3), and the maven official documentation, and the lockfile
+proves there was nowhere else they could have come from.
+
+**Consequences:**
+
+- **Change the text in `compare_maven_lockfiles()`** from "not downloaded from a remote repository"
+  to: *"(empty - the lockfile plugin does not found this dependency in specified repository which is configured in
+  the POM.xml)"*. The same sentence in 11.09 part 2 section 3.2 is superseded by this section.
+- **Note for the methodology chapter:** for Maven, the `resolved` URL my classifier reads is the
+  plugin's own HEAD-check result over the configured repositories, *not* Maven's download record.
+  In this cell both agree (Maven's log and the lockfile both say `maven-internal-hosted` for the
+  internal packages).
+- **check to add to the open items:** across all Maven `malicious_resolved` cells, does the
+  repository in Maven's `Downloaded from` line for the internal packages match the lockfile's
+  `resolved`? If yes everywhere, the classifier's evidence is confirmed by a second, independent
+  source; if not somewhere, that is important.
+- This also explains the two `repo.maven.apache.org` lines (131/133) from 11.09 part 2 section 3.3
+  from the plugin side: `getPluginResolvedField()` uses the *plugin* building request, i.e. the
+  `<pluginRepositories>` list, which still points at the real Central.
+
+**The complete Maven chain for the 5-cell case, with a citation at every step:**
+
+1. Phase 1 downloaded `javalin` from the group repository -> cached in the local repository
+   ("It caches remote downloads", 4.4).
+2. Phase 2 the cell's own pom.xml declares `javalin` , and it *is* already present locally -> no download is triggered
+   ("triggered by a project declaring a dependency that is not present in the local repository",
+   4.4) -> matches the 0 `Downloaded` lines (3.3).
+3. The lockfile plugin's HEAD check finds `javalin` in none of the configured remote repositories
+   -> empty `resolved` field (plugin source, 4.5) -> proves it was unreachable *remotely* in this cell.
+4. The build succeeded (private_resolved), without resolution error -> the only possible repository to obtain public dependencies is the local repository (.m2).
+
+---
+
+## 6. The three claims for the 5 cells - what each rests on now
+
+| claim | Maven evidence | npm evidence |
+|---|---|---|
+| no 1.0.3 in the package candidate set | metadata and all 6 downloads from `maven-internal-hosted` (log); `resolved` URLs (lockfile) | `resolved` URLs `npm-internal-hosted` (lockfile) |
+| the highest visible version was chosen | metadata -> `1.0.2.pom` sequence (log lines 6-18) + Maven docs (4.2) | 1.0.0 -> 1.0.2 in the lockfile pair + npm `update` docs (4.1); no log trace exists |
+| the build completed only because the public dependencies were not re-resolved | `javalin`: downloaded in phase 1 (lines 12, 156), nothing in phase 2 (log); empty `resolved` = unreachable from the configured repository (lockfile, 4.5); local-first rule (4.4) | `express` entry byte-identical before/after; C1a sibling fails with `E404 express`; `--package-lock-only` docs (4.1) |
+
+---
+
+## 7. The minimal-pair table (`step7b_minimal_pairs_table.py`)
+
+### 7.1 Why is meaningful to build it
+
+The per-variable table only gives me averages like
+"B1a: 34 %" . it cannot tell me whether variable B1a *itself* does anything. The rule found tells me *which
+combinations* are vulnerable, but not how much each single variable contributes. So I needed a way
+to isolate one variable at a time. Because the experiment is a complete, deterministic factorial, I can take every pair of cells that differ in **exactly one
+variable option** and simply count how often that one change flips the result. Everything else (variable option) in the
+pair is the same, so the result flip is caused by that variable alone.
+
+I split the flips into three types:
+
+| flip | meaning |
+|---|---|
+| `malicious_resolved` <-> `private_resolved` (**MP**) | the variable turns an attack into a defended build -> a mitigation |
+| `malicious_resolved` <-> `resolution_error` (**EM**) | the variable alone turns an attack into a broken build (with error) ->  *not* a mitigation |
+| `private_resolved` <-> `resolution_error` (**EP**) | the variable alone turns a defended build into a broken build |
+
+A pair has **no direction**: "M -> P" and "P -> M" are the same pair, so all three result
+combinations are counted in both directions .
+
+### 7.2 My worry, and the rule that handles it
+
+Some of my variables contain my own design decisions (the C1b setup phase, the `id=central`
+override in maven cells), so a flip in this table may be caused by my design and not by the package manager's characteristics.
+
+
+This is true: a minimal pair proves *that
+variable X changed the result*, it doesn't say about *why*. So the rule is: **for every non-zero
+count, trace the mechanism.** If it traces to package-manager behavior, it is an ecosystem result;
+if it traces to my design (C1b cache effect - Finding 6; pip B1d x C1b ), it is
+labelled as such and *not* reported as ecosystem behavior. If it traces to nothing yet, it is a
+finding to investigate before writing. Same rule as everywhere else in this analysis.
+
+Is the table necessary? The **MP column** is the one thing the rule test does not give me: it shows
+*which variable alone can turn an attack into a defended build*. The EM /
+EP columns are supporting numbers for the fail-closed point.
+
+### 7.3 How I built it (kept simple)
+
+Three small functions:
+
+- `make_partner_key(key, variable_name, new_option)` - takes a key `(ecosystem, A, B1, B2, C1)` and
+  gives back the same key with **one** variable replaced (an `if/elif` per variable).
+- `get_letter(result)` + `flip_kind(result_1, result_2)` - M / P / E, and "MP"/"PM" -> `MP`,
+  "ME"/"EM" -> `EM`, else `EP`.
+- `count_pairs_of_one_variable(valid_rows, results, ecosystem, variable_name, column, options)` -
+  for every valid cell of this ecosystem and every *other* option of this variable: build the
+  partner key, skip if the partner is not a valid cell, count the pair, and if the two results
+  differ count the flip by kind. Returns `pairs, MP, EM, EP`.
+- `main()` loops over the 3 ecosystems x 4 variables, prints the table and writes it to CSV.
+
+**Counting each pair only once:** a pair would be seen twice, once from each cell. The trick is
+`if my_option >= other_option: continue` - the pair is only counted from the cell whose option
+comes first alphabetically (`A1a-A2` is counted, `A2-A1a` is skipped). This works because my option
+names sort in a sensible order (`A1a < A1b < A2 < A3`, `B1a < ... < B1d`, `B2a < B2b < B2c`,
+`C1a < C1b < C1c`).
+
+
+### 7.5 Final minimal pair table 
+
+- script: sub-RQ1_result\analysis\step7b_minimal_pairs_table.py
+- generated CSV file: sub-RQ1_result\analysis\step7b_minimal_pairs_table.csv
+
+| ecosystem | variable | pairs | MP | EM | EP |
+|---|---|---|---|---|---|
+| npm | A | 189 | 8 | 16 | 8 |
+| npm | B1 | 189 | 10 | 20 | 23 |
+| npm | B2 | 135 | **12** | 66 | 0 |
+| npm | C1 | 135 | **0** | 0 | 12 |
+| pip | A | 189 | **0** | 24 | 12 |
+| pip | B1 | 189 | **0** | 44 | 36 |
+| pip | B2 | 135 | **54** | 16 | 0 |
+| pip | C1 | 135 | **0** | 16 | 0 |
+| Maven | A | 126 | 3 | 6 | 6 |
+| Maven | B1 | 126 | 3 | 6 | 35 |
+| Maven | B2 | 45 | **30** | 12 | 0 |
+| Maven | C1 | 90 | **0** | 0 | 4 |
+
+Check passed: the MP column reproduces the table in the analysis plan and in
+`summary_result_analysis.md` section 6 (npm 8 / 10 / 12 / 0, pip 0 / 0 / 54 / 0, Maven 3 / 3 / 30 /
+0). The EM and EP columns are new.
+
+### 7.6 How to read it, and which non-zero cells trace to my design
+
+- **C1 has MP = 0 in all three ecosystems.** The pipeline operation type never turns an attack
+  into a defended build. Operation type is not a mitigation.
+- **For pip, only B2 has MP > 0** (54). No single change of A, B1 or C1 ever turns a
+  `malicious_resolved` pip cell into a `private_resolved` one - only pinning does.
+- **EM is larger than MP for A and B1 in every ecosystem** (npm A 16 vs 8, pip B1 44 vs 0, ...).
+  Changing the registry topology or the package manager configuration alone mostly turns an attack
+  into a *broken build*, not into a defended one. This is the quantitative form of "blocking public
+  access protects by breaking the build".
+- Non-zero cells that trace to my harness, to be labelled as such:
+  - **Maven A: MP = 3 and B1: MP = 3** - the `mvn_A2_B1a_*_C1b` cache cells (Finding 6, C1b setup
+    phase fills `~/.m2`). Not Maven behaviour.
+  - **Maven C1: EP = 4** - `mvn_A2_B1a_B2{a,b}_C1b` (`private_resolved`) against their C1a and C1c
+    siblings (`resolution_error`): 2 cells x 2 pairs = 4. Same cache effect.
+  - **pip C1: EM = 16** - the 8 `pip_*_B1d_B2{b,c}_C1b` cells (`resolution_error`, section 0.5)
+    against their C1a and C1c siblings (`malicious_resolved`): 8 cells x 2 pairs = 16. Harness,
+    not PyPI.
+  - **npm C1: EP = 12** - still to trace cell by cell (expected: the 4 npm `A2/A3 x B1a x B2b/c x
+    C1b` cells against their C1a/C1c siblings = 8, plus 4 more to identify).
+
+### 7.7 Small things left in this script
+
+- Add the "trace" for the npm C1 EP = 12 cells (a small function that prints the pairs of one
+  ecosystem and one variable with their cell ids, so every non-zero count can be listed).
+
+---
+
+## Next steps
+- [ ] `step7b_five_cells_evidence.py`: change the empty-field text (section 5); call
+      `compare_npm_lockfiles()` for the other three npm cells.
+- [ ] add the pair-listing function and trace npm C1 EP = 12.
+- [ ] check: Maven `Downloaded from` repository vs lockfile `resolved` for all Maven
+      `malicious_resolved` cells (section 5).
+- [ ] `git log -- fixed_setup_file/npm-service-fixed-lock.json` to settle how the fixed lockfile
+      was created (section 2.5).
+- [ ] Excel cross-check of the per-variable table and the A1a/A1b comparison (still open from 10.09).
+- [ ] Then Step 9 (Figure G, cross-ecosystem comparison) per the schedule.

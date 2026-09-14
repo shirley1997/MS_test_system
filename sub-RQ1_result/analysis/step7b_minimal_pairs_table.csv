@@ -1,0 +1,13 @@
+ecosystem,variable,number_of_pairs,flips_malicious_private,flips_malicious_error,flips_private_error
+nodejs,A,189,8,16,8
+nodejs,B1,189,10,20,23
+nodejs,B2,135,12,66,0
+nodejs,C1,135,0,0,12
+python,A,189,0,24,12
+python,B1,189,0,44,36
+python,B2,135,54,16,0
+python,C1,135,0,16,0
+java,A,126,3,6,6
+java,B1,126,3,6,35
+java,B2,45,30,12,0
+java,C1,90,0,0,4
