@@ -288,19 +288,22 @@ def classify_logic(ecosystem, package_evidence) -> str:
 # phase 5: nexus cache invalidation for group repo and proxy repo
 # the requests for cache invalidation needs authentication! otherwise obtain code 403
 
+
 def invalidate_nexus_cache(ecosystem, cell_A_option):
     proxy_invalidate_url = f"{nexus_url}/service/rest/v1/repositories/{proxy_repo[ecosystem]}/invalidate-cache" 
     proxy_invalidate_response = requests.post(proxy_invalidate_url, auth=(nexus_username, nexus_password))
     if proxy_invalidate_response.status_code != 204:
         print(f"proxy repo cache invalidation did not succeed. code {proxy_invalidate_response.status_code} for {proxy_repo[ecosystem]}")
-    print(f"cache of {proxy_repo[ecosystem]} discarded")
+    else:
+        print(f"cache of {proxy_repo[ecosystem]} discarded")
 
     if cell_A_option == "A1a" or cell_A_option == "A1b":
         group_invalidate_url = f"{nexus_url}/service/rest/v1/repositories/{group_repo[ecosystem][cell_A_option]}/invalidate-cache"
         group_invalidate_response = requests.post(group_invalidate_url, auth=(nexus_username, nexus_password))
         if group_invalidate_response.status_code != 204:
             print(f"group repo cache invalidation did not succeed. code {group_invalidate_response.status_code} for {group_repo[ecosystem][cell_A_option]}")
-        print(f"cache of {proxy_repo[ecosystem]} and {group_repo[ecosystem][cell_A_option]} discarded")
+        else:
+            print(f"cache of {proxy_repo[ecosystem]} and {group_repo[ecosystem][cell_A_option]} discarded")
 
 # phase 7: set up connection between central automated pipeline and github actions runner
 # 1. use gh api to get registration token, which is needed for connect a runner with github
