@@ -1420,14 +1420,14 @@ Always make sure the Nexus container is running **before** deploying.
   ```
 
 - Kept `<autoPublish>false</autoPublish>` as a safety decision.
-  - Reason: the Central Portal validates the deployment first, so the coordinates can be checked before the permanent publication.
-- Checked both coordinates in the Central Portal and manually clicked **Publish**.
+  - Reason: the Central Portal validates the deployment first, so the combinations can be checked before the permanent publication.
+- Checked both combinations in the Central Portal and manually clicked **Publish**.
   - Result: both public version `1.0.3` packages were successfully published.
 
 ## Rebuilt and republished internal Nexus packages
 
 - Design decision: internal and public packages must use the same `groupId` and `artifactId` for the DCA experiment; only their versions and repository locations differ.
-- Changed the internal package coordinates from `com.xueting.thesis` to:
+- Changed the internal package combinations from `com.xueting.thesis` to:
 
   ```text
   io.github.shirley1997.thesis
@@ -1594,13 +1594,13 @@ Hash-checking (`--require-hashes`, auto-triggered whenever any entry has a hash)
 ## 1. What `maven-lockfile` is (researched today)
 
 - Third-party Maven plugin from `chains-project`, subject of the paper "Maven-Lockfile: High Integrity Rebuild of Past Java Releases" (arXiv 2510.00730).
-- Problem it solves: Maven doesn't pin *exactly which artifact bytes* a build resolved anywhere by default, only the version string in `pom.xml`. Two builds of the same `pom.xml` can silently resolve different artifacts later (metadata drift, or — relevant to this thesis — a dependency confusion attack serving a different artifact under the same coordinate).
+- Problem it solves: Maven doesn't pin *exactly which artifact bytes* a build resolved anywhere by default, only the version string in `pom.xml`. Two builds of the same `pom.xml` can silently resolve different artifacts later (metadata drift, or — relevant to this thesis — a dependency confusion attack serving a different artifact under the same combination).
 - Records the fully resolved dependency tree + SHA-256 checksums into `lockfile.json`.
 - This plugin has 3 goals, verified plugin facts directly against source code (`GenerateLockFileMojo.java`, `FreezeDependencyMojo.java`, `ValidateMojo.java` on GitHub), 
   - `generate`: normal resolve (via project's configured repositories) + writes `lockfile.json`.
   - `validate`: **does not resolve from the lockfile.** Re-runs normal resolution again and compare checksums (computed from local `~/.m2` cache) against the stored lockfile. It's a drift/integrity check, not a "rebuild".
   - `freeze`: the goal that actually *uses* the lockfile's content — pure in-memory transform (no network calls), reads `lockfile.json` + `pom.xml`, writes `pom.lockfile.xml` with every dependency version hard-pinned. Running a real resolution command against that frozen POM is the actual "rebuild from lockfile" step, the true analog of `npm ci` / `pip install -r pylock.toml`.
-- Coordinates (groupID + artifactID): `io.github.chains-project:maven-lockfile`. Pinned to **5.17.3** (verified as the GitHub-marked "Latest Release" stable version via the [GitHub Releases page](https://github.com/chains-project/maven-lockfile) and [Maven Central page of the plugin ](https://central.sonatype.com/artifact/io.github.chains-project/maven-lockfile/versions)
+- combinations (groupID + artifactID): `io.github.chains-project:maven-lockfile`. Pinned to **5.17.3** (verified as the GitHub-marked "Latest Release" stable version via the [GitHub Releases page](https://github.com/chains-project/maven-lockfile) and [Maven Central page of the plugin ](https://central.sonatype.com/artifact/io.github.chains-project/maven-lockfile/versions)
 
 ## 2. Design decisions made today (C1c for Java)
 
@@ -2268,7 +2268,7 @@ gh api -X GET search/repositories -f q='\"dependency confusion\" fork:false arch
 
 - **Why I do not use `repositoryId`, and why not checksums.**
   - `repositoryId` is unreliable: because of the `id=central` override in `generate_pom_xml.py`, internally hosted Maven artifacts report `repositoryId = "central"`. Already documented earlier, still true.
-  - Checksums verify **integrity**, not **origin**. The attacker's `1.0.3` has a perfectly valid hash of itself. A hash proves the file was not altered in transit; it cannot tell me whether the coordinate was satisfied internally or externally. Only the resolved URL carries that.
+  - Checksums verify **integrity**, not **origin**. The attacker's `1.0.3` has a perfectly valid hash of itself. A hash proves the file was not altered in transit; it cannot tell me whether the combination was satisfied internally or externally. Only the resolved URL carries that.
 
 
 
@@ -2638,7 +2638,7 @@ Supporting numbers:
 - Pinned cells: 135, of which **0** were attacked (66 safe, 69 build errors).
 - Non-pinned cells: 225. Of these 30 failed to resolve anything, leaving 195 where the build produced
   a result — and **190 of those 195 (97.4 %)** got the attacker's package.
-- `A1a` and `A1b` gave the **same outcome in all 96 comparable coordinates**, zero differences.
+- `A1a` and `A1b` gave the **same outcome in all 96 comparable combinations**, zero differences.
 - Of the successful attacks, **150 of 380 package resolutions (39 %) were served by Nexus itself**
   (group or proxy), and 230 (61 %) came directly from the public registry.
 
@@ -2708,7 +2708,7 @@ Both A2 and A3 map to `*-internal-hosted`, so under **B1a, B1b and B1d the gener
 byte-identical** for the two. Only B1c separates them, and there A3 is invalid by definition.
 
 Checked this against the results as well, not only in the code. Per ecosystem there are 36
-coordinates where A2 and A3 can be compared:
+combinations where A2 and A3 can be compared:
 
 | ecosystem | identical | different |
 |---|---|---|
@@ -2716,7 +2716,7 @@ coordinates where A2 and A3 can be compared:
 | pip | 27 | 9 (all B1c rows, where A3 is `invalid_configuration`) |
 | Maven | 25 | 11 (the B1c rows **plus B1a rows**) |
 
-So for npm and pip there is **not one coordinate where both A2 and A3 are valid and they differ**.
+So for npm and pip there is **not one combination where both A2 and A3 are valid and they differ**.
 
 **This is not an error.** A2 and A3 differ only in whether a proxy repository *exists* in Nexus, and
 a client that is never pointed at it cannot observe it. The correct reading is a finding in its own
@@ -2810,7 +2810,7 @@ therefore a result and not only a limitation.
 **(b) Maven has no per-package update command.**
 There is no equivalent of `npm update <pkg>` or `pip install --upgrade <pkg>`. In Maven the version
 lives in the POM, so "updating" means editing the POM, and `-U` only forces a project-wide re-check
-of remote metadata. The third-party `versions-maven-plugin` could target single coordinates, but it
+of remote metadata. The third-party `versions-maven-plugin` could target single combinations, but it
 **rewrites the POM** and would replace the B2 version specifier I am testing, so it is unusable here.
 Effect on the internal packages is equivalent across the three; the **scope** is not.
 
@@ -3124,7 +3124,7 @@ All pip, all B1d, all C1b - **exception 2**, and it is section 0.5 of the analys
 setup phase installs the fixed `1.0.0` using the cell's own `pip.conf`; under B1d that version is
 unreachable (because 1.0.0 only exist in nexus repositories), so the setup fails and phase 2 never runs. **The cell never reached the operation under
 test. (package update phase)** That is a property of my package update design, not a characteristic of pip - and the proof is that the same
-coordinates come out `malicious_resolved` under C1a and C1c. It must be labelled as a
+combinations come out `malicious_resolved` under C1a and C1c. It must be labelled as a
 artefact associated with the thesis, otherwise it becomes a false ecosystem finding.
 
 Reading the names is what gives the answer: every one of the 8 is `pip_..._B1d_..._C1b`. Same
@@ -4089,3 +4089,247 @@ Check passed: the MP column reproduces the table in the analysis plan and in
       was created (section 2.5).
 - [ ] Excel cross-check of the per-variable table and the A1a/A1b comparison (still open from 10.09).
 - [ ] Then Step 9 (Figure G, cross-ecosystem comparison) per the schedule.
+
+# 15.09.2026 - sub-RQ1 result analysis Step 9: cross-ecosystem comparison (Figure G), done in Excel
+
+Schedule day 5 (analysis plan Part 3a): Step 9 - compare, for every configuration combination
+(A, B1, B2, C1), what the three ecosystems results, count agreement, and explain every
+disagreement with its cause. Decided to do it in **Excel** instead of a script: the data is final,
+the `cell_id` column is already a lookup key, and the formatted table is the figure itself.
+Everything is in `sub-RQ1_result/analysis/result_analysis_excel.xlsx`, new sheet `step9`.
+The sheet with the imported `results.csv` is called `results` below (columns: A = `cell_id`,
+C = `ecosystem`, D = A, E = B1, F = B2, G = C1, H = `classification`).
+
+
+
+---
+
+## 1. Building the comparison table (sheet `step9`)
+
+**Step 1 - the 144 combinations.** Copied columns D:G (A, B1, B2, C1) of all 432 rows from
+`results` to `step9!A1`, then `Daten -> Duplikate entfernen` on the 4 columns. ,
+**144 rows remain** = 4 A x 4 B1 x 3 B2 x 3 C1, one row per combination, including the invalid ones.
+Note: `Duplikate entfernen` keeps the order of first appearance, so the C1b rows ended up at the
+bottom (rows 95+). For the figure the sheet must be sorted A, B1, B2, C1 (not done yet).
+
+**Step 2 - the three ecosystem results per combination.** Headers E1 `nodejs`, F1 `python`,
+G1 `java`. The cell_id is rebuilt from the four variable cells and looked up in `results`:
+
+```
+E2: =SVERWEIS("npm_"&A2&"_"&B2&"_"&C2&"_"&D2;results!$A:$H;8;FALSCH)
+F2: =SVERWEIS("pip_"&A2&"_"&B2&"_"&C2&"_"&D2;results!$A:$H;8;FALSCH)
+G2: =SVERWEIS("mvn_"&A2&"_"&B2&"_"&C2&"_"&D2;results!$A:$H;8;FALSCH)
+```
+
+
+
+**Step 3 - the result agreement column H.**
+
+```
+H2: =WENN(ZÄHLENWENN(E2:G2;"<>invalid_configuration")<2;"not comparable";
+     WENN(MAX(ZÄHLENWENN(E2:G2;"malicious_resolved");ZÄHLENWENN(E2:G2;"private_resolved");
+              ZÄHLENWENN(E2:G2;"resolution_error"))
+          =ZÄHLENWENN(E2:G2;"<>invalid_configuration");"agree";"disagree"))
+```
+
+How to read it: first count how many ecosystems really executed this combination (cells that are not
+`invalid_configuration`) = "executed". if this kind of cell is less than 2 -> "not comparable" (nothing to compare; this
+also catches the rows where all three are invalid). Otherwise count the M, P and E in the row and
+take the biggest count; if the biggest count equals "executed" cell, that means one single result covers every
+executed ecosystem -> "agree"; else "disagree". 
+
+Examples: `P P P` -> 3 = 3 agree;
+`M M invalid` -> 2 = 2 agree; `E P P` -> 2 != 3 disagree.
+
+Counts (`=ZÄHLENWENN(H2:H145;"agree")` etc.):
+
+| agreement | combinations |
+|---|---|
+| agree | **96** |
+| disagree | **39** |
+| not comparable | **9** |
+| total | 144 |
+
+The 9 not-comparable rows are A3 x B1c (3 B2 x 3 C1), invalid in all three ecosystems.
+So **135 combinations are comparable; 96 of them (71 %) agree, 39 disagree.** 
+
+
+
+---
+
+## 2. Finding the groups inside the 39 disagreements (question by question, like 10.09)
+
+### Step A - which ecosystem is the odd one out?
+
+Column I `npm_result_alone`:
+
+```
+I2: =WENN(H2="disagree";WENN(UND(E2<>F2;E2<>G2);"npm alone";
+      WENN(UND(F2<>E2;F2<>G2);"pip alone";
+      WENN(UND(G2<>E2;G2<>F2);"maven alone";"mixed")));"")
+```
+
+Result: **npm alone 28, pip alone 7, maven alone 4, mixed 0** (= 39).
+
+Two imprecisions of this formula, found and handled: (1) the WENN chain checks npm first and the
+first true branch wins, so a row where Maven is `invalid_configuration` (e.g. `M / E / -`) is put
+into "npm alone" although pip is the odd one; (2) the one row where all three results differ
+(`A3 B1a B2b C1b` = `P / E / M`) also lands in "npm alone". So the 28 is too big.
+
+### Step A2 - clean the 28
+
+Filter I = `npm alone` and G <> `invalid_configuration`: **22 rows**. 21 of them look like
+`resolution_error / private_resolved / private_resolved`; the 22nd is the special row
+`A3 B1a B2b C1b` (`private_resolved / resolution_error / malicious_resolved`).
+
+**Why there is only one row where all three ecosystems differ:** such a row needs an M, a P and an
+E at the same combination. Under B2a there is never an M (Finding 1), so pinned rows have at most two
+different values. Under B2b/B2c a P occurs only in the 5 positive-control cells
+(A2/A3 x B1a x C1b), and of those combinations only A3 x B1a x B2b has a Maven M (the `id=central`
+leak). So the single all-different row is where three separate causes meet in one combination.
+
+### Step B - group 1: what the 21 npm-alone rows share (pivot: Zeilen = B2, B1, C1; Filter = npm alone)
+
+- B2: only **B2a** appears.
+- B1: only **B1b** and **B1c** (B1a only in the special row). B1d never.
+- A: all four. C1: all three, equal counts.
+
+Sentence: *npm alone has result `resolution_error` when B2 = B2a and B1 is B1b or B1c, for every A
+and every C1; pip and Maven have `private_resolved` there.* Count: B1b 4 A x 3 C1 = 12,
+B1c 3 A x 3 C1 = 9 (A3 x B1c invalid) -> **21**.
+
+**Mechanism (my own pilot finding, log 10.07.2026, "Design decisions confirmed" point 1 and "Key
+findings" 1):** npm parses duplicate `registry=` keys in `.npmrc` as **last-key-wins**. My B1b/B1c
+`.npmrc` has the private URL on the first line and the public / proxy URL on the second line, so npm
+only asks the second one - the public registry (directly under B1b, via the Nexus proxy under B1c).
+Version 1.0.0 does not exist there (only 1.0.3), and B2a demands 1.0.0 -> `ETARGET` ->
+`resolution_error`. pip and Maven really consult both registries and find 1.0.0 in Nexus ->
+`private_resolved`. **Ecosystem property of npm**, not harness.
+
+**Why B1d is not in the disagree list:** filtered H = `agree`, B1 = B1d, B2 = B2a: all 12 rows are
+`resolution_error / resolution_error / resolution_error`. So under B1b/B1c npm behaves like *every*
+ecosystem does under B1d (default configuration = public registry only). That is the precise form
+of "npm B1b = B1c = B1d". **Still to prove pointwise** (see Next steps) - the disagree/agree rows
+only show the B2a slice, and the claim must hold for every A, B2, C1. Expected reason: the other
+variables do not change which registry npm queries (fixed by B1), only what happens at that
+registry (pinned -> E, not pinned -> M), which is the same as under B1d. Note for the write-up: the
+*result* is identical, but the *delivery path* is not - under B1c the attacker's package came
+through the Nexus proxy, under B1b/B1d directly from npmjs.org (Finding 3).
+
+### Step C1 - group 2: maven alone (4 rows)
+
+Filter I = `maven alone`: all four are **A3 x B1a**, C1a and C1c. Maven: `private_resolved` under
+B2a, `malicious_resolved` under B2b; npm and pip: `resolution_error`.
+
+Mechanism: under A3 x B1a I used the repository's own name as repository ID (not `central`), so the
+super-POM's real Maven Central is not overridden and is searched as well (09.08 entry, Finding 5
+exception 1). Under B2a Maven needs exactly 1.0.0, Central has only 1.0.3, so 1.0.0 comes from
+internal-hosted -> P. Under B2b Maven searches both repositories and takes the highest version in
+the range -> 1.0.3 from Central -> M. npm and pip see only internal-hosted, where the public
+dependencies do not exist -> the build breaks. **My own design decision, not a Maven property.**
+The same effect under C1b sits inside the special row.
+
+### Step C2 - group 3 and group 4: pip alone (7 rows) - two different reasons
+
+All seven have **C1b**. Two patterns:
+
+- **4 rows: B1d x B2b x C1b** (A1a, A1b, A2, A3): npm and Maven `malicious_resolved`, pip
+  `resolution_error`. Reason: C1b has two phases. Phase 1 (setup) is *my harness* creating the
+  starting state "1.0.0 is already installed": it installs the fixed `pyproject.toml` (pinned 1.0.0)
+  using the cell's own `pip.conf`. Phase 2 is the operation under test (`pip install --upgrade`).
+  Under B1d `pip.conf` points only at PyPI, where 1.0.0 does not exist -> phase 1 fails -> phase 2
+  never runs. The `resolution_error` is the harness saying "I could not build the starting state",
+  not pip saying "the upgrade failed". Proof it is not a PyPI result: the same configuration under
+  C1a and C1c is `malicious_resolved`. **Harness (Finding 5 exception 2, plan section 0.5).**
+- **3 rows: A2/A3 x B1a x (B2a, B2b) x C1b** (`A2 B1a B2a`, `A2 B1a B2b`, `A3 B1a B2a`): npm and
+  Maven `private_resolved`, pip `resolution_error`. **The trap: "who is different" is not "who has
+  the cause".** pip fails phase 1 because the public dependencies do not exist in internal-hosted -
+  and pip also fails C1a and C1c for the same configuration, so pip is *consistent*. The odd
+  behaviour is that npm and Maven **complete C1b** where they fail C1a/C1c: npm because
+  `npm update <pkg1> <pkg2>` re-resolves only the two named packages (Finding 7, an npm property;
+  the B2a cells are the no-op cells with inherited URLs, summary section 3), Maven because the public
+  dependencies come from the `~/.m2` cache filled in phase 1 (Finding 6, harness). These 3 rows
+  belong to the same family as the special row.
+
+### Step C3 - the 6 rows where Maven is invalid (filter H = disagree, G = invalid_configuration) - NOT DONE YET
+
+Expected (to verify tomorrow): look at npm vs pip only. Rows `M / E / -` are B1d x B2c x C1b (4 rows,
+A1a, A1b, A2, A3) -> same reason as group 3. Rows `P / E / -` are A2/A3 x B1a x B2c x C1b (2 rows)
+-> same reason as group 4. No new group.
+
+### The grouping table (to be verified and completed tomorrow; counts must add up to 39)
+
+| group | pattern (A, B1, B2, C1) | odd ecosystem | cause | label | rows |
+|---|---|---|---|---|---|
+| 1 | all A, B1b/B1c, B2a, all C1 | npm (E vs P/P) | last-key-wins `.npmrc`: npm asks only the public registry, 1.0.0 not there | ecosystem (npm) | 21 |
+| 2 | A3, B1a, B2a/B2b, C1a/C1c | Maven (P or M vs E/E) | repository ID != `central` -> real Central leaks in | implementation (`id=central`) | 4 |
+| 3 | all A, B1d, B2b/B2c, C1b | pip (E vs M/M or M/-) | pip C1b phase 1 cannot obtain 1.0.0 from PyPI, phase 2 never runs | harness (C1b phase 1) | 8 (4 + 4 from C3) |
+| 4 | A2/A3, B1a, all B2, C1b | npm + Maven complete, pip fails (incl. the all-different row) | npm updates only the named packages; Maven `~/.m2` cache; pip fails like in C1a/C1c | npm property + harness cache (+ `id=central` in the A3 x B2b row) | 6 (3 + 2 from C3 + 1 special) |
+
+21 + 4 + 8 + 6 = 39. **Reading: 21 disagreements are a genuine ecosystem difference (npm), 4 are
+my `id=central` decision, 14 are C1b-phase-1 effects. Every disagreement has a named cause.**
+This table is the core of section 7.5.
+
+---
+
+## 3. Two by-products
+
+- **Open item "npm C1 EP = 12" (14.09 section 7.6) is closed by this table.** Group 4 shows the 6
+  npm cells `npm_{A2,A3}_B1a_B2{a,b,c}_C1b` are `private_resolved` while their C1a and C1c siblings
+  are `resolution_error`: 6 cells x 2 pairs = 12. My guess on 14.09 was 4 cells + 4 unknown; the
+  unknown 4 are the two B2a no-op cells x 2 pairs.
+- **Every C1-related disagreement is a C1b row; C1a and C1c rows always come in identical pairs.**
+  Suggests C1a = C1c for every cell. Needs the pointwise check over all 432 cells (Next steps). If it
+  holds, Figure G in the thesis can be 36 rows (A, B1, B2) x two blocks of three ecosystem columns
+  ("C1a = C1c" and "C1b").
+
+---
+
+## 4. Figure G, Excel version
+
+Conditional formatting on `step9!E2:G145` (`Bedingte Formatierung -> Regeln zum Hervorheben von
+Zellen -> Textinhalt`), one rule per result with the Figure C colours: `malicious_resolved` red,
+`private_resolved` green, `resolution_error` yellow, `invalid_configuration` grey; column H green
+for agree, orange for disagree. Readable at a glance: yellow appears in the npm column only under
+B2a; disagree rows cluster.
+
+Still to do: sort A1:I145 by A, B1, B2, C1 (four levels, `Daten -> Sortieren`), so the C1a/C1b/C1c
+rows of one combination are consecutive. 144 rows do not fit a thesis page: keep this as the
+appendix/log version; the compact 36-row version is easier to draw with the Figure C matplotlib code
+than in Excel - decide on the write-up day.
+
+---
+
+## 5. Excel pieces used today (so I do not have to look them up again)
+
+- `Duplikate entfernen`: deletes every row that is an exact repeat of an earlier row in the selected columns.
+- `&`: glues texts (`"npm_"&A2&"_"&B2` -> `npm_A1a_B1a`).
+- `SVERWEIS(what; where; column; FALSCH)`: search `what` in the first column of `where`, return the
+  value from column number `column` of the same row; `FALSCH` = exact match; `$` freezes the range.
+- `WENN(test; if_true; if_false)`: yes/no decision; nested = chain of decisions, first true wins.
+- `UND(a; b)`: true only if both hold. `<>` = not equal.
+- `ZÄHLENWENN(range; condition)`: how many cells meet the condition; `"<>invalid_configuration"`
+  counts the executed ecosystems. `ZÄHLENWENNS` = several conditions at once.
+- `MAX(x; y; z)`: the largest number.
+- `WECHSELN(text; old; new)`: replace a piece of text, used to build a sibling cell_id
+  (`WECHSELN(A2;"_C1a";"_C1c")`) for a pointwise comparison via SVERWEIS.
+- Filter: hides rows; formulas still see all rows; copying a filtered range copies only visible rows.
+- PivotTable (`Einfügen -> PivotTable`, Neues Arbeitsblatt; panel with Filter / Spalten / Zeilen /
+  Werte): drag a column into Zeilen to list its values, a column into Werte to count rows; Filter
+  restricts the counting. Same job as `count_one_variable_option()` without code.
+
+---
+
+## Next steps (16.09)
+- [ ] Step C3 in Excel (6 Maven-invalid disagree rows), then confirm the grouping table counts 21 / 4 / 8 / 6 = 39.
+- [ ] Pointwise checks on the `results` sheet, each one formula column + one `ZÄHLENWENN(...;"DIFF")`:
+  - C1a = C1c (all ecosystems): `=WENN(G2="C1a";WENN(H2=SVERWEIS(WECHSELN(A2;"_C1a";"_C1c");$A:$H;8;FALSCH);"same";"DIFF");"")` - 144 comparisons.
+  - npm B1b = B1d: `=WENN(UND(C2="nodejs";E2="B1b");WENN(H2=SVERWEIS(WECHSELN(A2;"_B1b_";"_B1d_");$A:$H;8;FALSCH);"same";"DIFF");"")` - 36 comparisons.
+  - npm B1c = B1b: same with `"_B1c_"` -> `"_B1b_"` and `E2="B1c"` - 27 comparisons.
+  - A1a = A1b (the Excel cross-check open since 10.09): `WECHSELN(A2;"_A1a_";"_A1b_")` on the A1a rows - 96 comparisons, must give 0 DIFF like the Python result.
+- [ ] Sort `step9` by A, B1, B2, C1; decide the compact Figure G layout after the C1a = C1c result.
+- [ ] Tick Step 9 in `docs/summary_result_analysis.md` section 10; add the closed npm C1 EP = 12 trace.
+- [ ] The small script fixes from summary section 10 (`step7b_five_cells_evidence.py` empty-field text
+      + the other three npm cells; pair-listing function; stale "31 + 4" line in the plan file).
+- [ ] Then Step 10 (Figure H, system level) - it is this same `step9` sheet plus one
+      `=ZÄHLENWENN(E2:G2;"malicious_resolved")` column.
