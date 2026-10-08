@@ -4333,3 +4333,277 @@ than in Excel - decide on the write-up day.
       + the other three npm cells; pair-listing function; stale "31 + 4" line in the plan file).
 - [ ] Then Step 10 (Figure H, system level) - it is this same `step9` sheet plus one
       `=ZÄHLENWENN(E2:G2;"malicious_resolved")` column.
+
+# 20.09.2026 - sub-RQ1 result analysis: Step 9 finished (Figure G verified), Step 10 done (Figure H, system-level result), all in Excel
+
+
+
+## 0a. What Step 10 (system-level analysis) actually does, in plain words
+
+Until Step 10, one row of data = **one service** (one ecosystem with one configuration combination).
+Step 10 asks a different question: *the test application runs all three services; the administrator applies one
+registry and package-manager policy; what happens to the test application as a whole?*
+
+So the three cells that share the same configuration combination (A, B1, B2, C1) - the npm cell, the
+pip cell and the Maven cell - are grouped and looked at as **one system**. Per combination two things
+are counted: for how many of the three services this configuration is **valid** (column J), and how
+many of them resolved the attacker's package (column K). That is all Step 10 is: a count across the
+three ecosystem columns that Figure G already has (figure G is the cross-ecosystem comparison, about result agree or disagree between all three ecosystem).
+
+**The assumption this grouping needs, to be stated once in the thesis:** the three services are
+**independent** - separate projects, separate package managers, separate Nexus repositories, separate
+CI jobs - so the resolution of one service cannot influence the resolution of another. Only because
+of that may three separately measured cells be read as one system.
+
+## Corrections to section 4 (made 08.10.2026)
+
+- **Column names.** The column headers in the sheet are **`valid_cell in this row`** (J) and
+  **`count malicious_resolved in this row`** (K); the label for J = 0 is **`all invalid cells`**.
+  
+- **What column J in sheet really means.** J means  **for how many of
+  the three services this configuration combination is valid, i.e. can be applied at all** (3, or 2
+  under B2c because a POM cannot express an unspecified version, or 0 for A3 x B1c). A cell with
+  result `resolution_error` **is** counted in J: the configuration could be applied, the package
+  manager just could not resolve the packages and the build failed. Only *invalid* combinations are
+  excluded. (not count)
+- **"all compromised" means all **valid** services, not always three.** 
+
+
+Finished the open items of Step 9 from the 15.09 entry (Step C3, verified grouping
+counts, four pointwise checks) and did the whole of Step 10 (system-level aggregation, Figure H).
+Everything is in `sub-RQ1_result/analysis/result_analysis_excel.xlsx`: sheet `step9` (the 144
+configuration combinations from 15.09, now with new columns J, K, L) and sheet `results` (the imported
+`results.csv`, now with new check columns T, U, V, W; ). 
+
+
+
+---
+
+## 1. Step C3 - the 6 disagree rows where Maven is `invalid_configuration`
+
+Filter on `step9`: H = `disagree` and G = `invalid_configuration` -> 6 rows. All have **B2c**
+(unspecified version), which maven cannot express -> invalid. Only npm (E)
+and pip (F) carry information. Two patterns:
+
+| rows | A | B1 | B2 | C1 | npm | pip | belongs to |
+|---|---|---|---|---|---|---|---|
+| 4 | A1a, A1b, A2, A3 | B1d | B2c | C1b | `malicious_resolved` | `resolution_error` | **group 3** |
+| 2 | A2, A3 | B1a | B2c | C1b | `private_resolved` | `resolution_error` | **group 4** |
+
+- Group-3 reading: npm reaches the public registry under B1d and takes 1.0.3, whatever A is; pip
+  fails in the C1b setup phase because 1.0.0 does not exist on PyPI (because of B1d) (this is a design effect).
+- Group-4 reading: npm under B1a with A2/A3 only sees internal-hosted, `npm update` touches only the
+  two internal packages and finds 1.0.2 -> `private_resolved`; pip fails phase 1 because the public
+  dependencies are not in internal-hosted repo (it fails C1a/C1c there as well).
+- **No new group.** Both patterns are C1b-phase-1 effects already named on 15.09.
+
+## 2. The grouping table - counts verified with `ZÄHLENWENNS` 
+
+Formulas on `step9` (rows 2-145):
+
+```
+group 1: =ZÄHLENWENNS($H$2:$H$145;"disagree";$C$2:$C$145;"B2a";$E$2:$E$145;"resolution_error";$F$2:$F$145;"private_resolved")
+group 2: =ZÄHLENWENNS($H$2:$H$145;"disagree";$A$2:$A$145;"A3";$B$2:$B$145;"B1a";$D$2:$D$145;"<>C1b")
+group 3: =ZÄHLENWENNS($H$2:$H$145;"disagree";$B$2:$B$145;"B1d";$D$2:$D$145;"C1b")
+group 4: =ZÄHLENWENNS($H$2:$H$145;"disagree";$B$2:$B$145;"B1a";$D$2:$D$145;"C1b")
+```
+
+Output: **21 / 4 / 8 / 6 = 39.** The table from 15.09 is now *verified*, not expected. One sentence
+per group (written into the sheet next to the counts):
+
+- **Group 1 (21) - npm property.** Under B2a with B1b/B1c, npm alone has result `resolution_error`
+  because its last-key-wins `.npmrc` makes it query only the public registry, where 1.0.0 does not
+  exist, while pip and Maven can access both registries and find 1.0.0 in Nexus.
+- **Group 2 (4) - my `id=central` design decision.** Under A3 x B1a (C1a/C1c), Maven alone can also
+  see real Maven Central because the repository ID is not `central`, so it resolves 1.0.0 (B2a) or
+  1.0.3 (B2b) while npm and pip cannot find the public dependencies and break.
+- **Group 3 (8) - design effect (pip C1b phase 1).** Under B1d x B2b/B2c x C1b, pip alone has result
+  `resolution_error` because the setup phase cannot obtain 1.0.0 from PyPI (because of B1d, pip only sees PyPI), so the package update under test
+  never ran. the same configuration is `malicious_resolved` under C1a and C1c.
+- **Group 4 (6) - C1b (package update) completes only for npm and Maven.** Under A2/A3 x B1a x C1b, pip fails as it
+  does in C1a/C1c (public dependencies unreachable), while npm completes because `npm update`
+  re-resolves only the two named packages (npm property) and Maven because the public dependencies
+  come from the `~/.m2` cache filled in phase 1 (harness); the A3 x B2b row additionally shows the
+  group-2 leak (`malicious_resolved`).
+
+**Summary sentence for section 7.5:** of 135 comparable configuration combinations, 96 agree and 39 disagree; 21
+disagreements are a genuine ecosystem difference (npm), 4 are my `id=central` decision, 14 are
+C1b-phase-1 effects. Every disagreement has a named cause.
+
+---
+
+## 3. Four pointwise checks on the `results` sheet (columns T, U, V, W)
+
+### 3.1 How one of these formulas works 
+
+Example T2, the row of `npm_A1a_B1a_B2a_C1a`:
+
+```
+T2: =WENN(G2="C1a";WENN(H2=SVERWEIS(WECHSELN(A2;"_C1a";"_C1c");$A:$H;8;FALSCH);"same";"DIFF");"")
+```
+
+1. `G2="C1a"` -> this row is a C1a cell, so it is the *left side* of a pair. A C1b or C1c row fails
+   this test and stays **empty** - it is never a left side; its pair is handled from the C1a row.
+2. `WECHSELN(A2;"_C1a";"_C1c")` -> builds the partner's cell_id `npm_A1a_B1a_B2a_C1c`: same
+   ecosystem, A, B1, B2 - only C1 changed.
+3. `SVERWEIS(<partner id>;$A:$H;8;FALSCH)` -> finds the partner's row and returns its column 8 =
+   `classification`.
+4. `H2 = <partner's classification>` -> `same` if the two cells of the pair have the same result,
+   otherwise `DIFF`.
+
+So every pair is checked exactly once, and the word is written in the left cell's row only. Empty
+cells are correct (not tested from that side). `same` = *the two cells of the pair have the same
+classification*.
+
+### 3.2 The four columns
+
+```
+T (C1a = C1c):    =WENN(G2="C1a";WENN(H2=SVERWEIS(WECHSELN(A2;"_C1a";"_C1c");$A:$H;8;FALSCH);"same";"DIFF");"")
+U (npm B1b = B1d): =WENN(UND(C2="nodejs";E2="B1b");WENN(H2=SVERWEIS(WECHSELN(A2;"_B1b_";"_B1d_");$A:$H;8;FALSCH);"same";"DIFF");"")
+V (npm B1c = B1b): =WENN(UND(C2="nodejs";E2="B1c";H2<>"invalid_configuration");WENN(H2=SVERWEIS(WECHSELN(A2;"_B1c_";"_B1b_");$A:$H;8;FALSCH);"same";"DIFF");"")
+W (A1a = A1b):    =WENN(D2="A1a";WENN(H2=SVERWEIS(WECHSELN(A2;"_A1a_";"_A1b_");$A:$H;8;FALSCH);"same";"DIFF");"")
+```
+
+filled down to row 433; counted with `=ZÄHLENWENN(T2:T433;"same")` / `...;"DIFF")`. In V the extra
+condition `H2<>"invalid_configuration"` skips the 9 invalid `npm_A3_B1c_*` rows, whose B1b partner
+is valid and would otherwise show a false `DIFF`.
+
+### 3.3 Results
+
+| check | pairs (`same`) | `DIFF` | meaning |
+|---|---|---|---|
+| **C1a = C1c** | 144 | **0** | a fresh install (C1a) and a rebuild from the existing lockfile (C1c) never differ - in any ecosystem, any A, B1, B2. The only operation type that ever deviates is C1b, and every C1b difference was traced to phase 1 on 15.09. |
+| **npm B1b = B1d** | 36 | **0** | for npm, configuring two registries (private + public) gives the same result as the default configuration in every A, B2, C1 (because of my design, i put public registry to the second line) |
+| **npm B1c = B1b** | 27 | **0** | same via the Nexus proxy; 27 not 36 because A3 x B1c is invalid |
+| **A1a = A1b** | 108 | **0** | the Excel cross-check of the 10.09 Python result. 108 = 96 valid pairs + 12 invalid pairs where both cells are invalid (`mvn_A1a_*_B2c_*` vs `mvn_A1b_*_B2c_*`, both `invalid_configuration`, counted as `same`). The Python check compared only the 96 valid pairs -> 0 differences in both. |
+
+What `=` means here: *take every pair of cells that are identical in every variable and differ only
+in this one option - all pairs have the same result.* A pointwise identity checked at every
+combination of the other variables, not an average (same status as A1a = A1b on 10.09).
+
+- **"npm B1b = B1c = B1d" is now a checked identity**, not an observation on the B2a slice. Reason
+  it holds for every B2/C1: the other variables do not change *which registry npm queries* (fixed by
+  B1 via last-key-wins `.npmrc`), only what happens at that registry (pinned -> E, not pinned -> M),
+  and that is the same as under B1d. **Same result, different delivery path:** under B1c the
+  attacker's package came through the Nexus proxy, under B1b/B1d directly from npmjs.org (Finding 3).
+- **Figure G decision:** because C1a = C1c holds everywhere, the compact thesis figure can show C1a
+  and C1c as **one block**: 36 rows (A, B1, B2) x two blocks of three ecosystem columns
+  ("C1a = C1c" and "C1b"). To be drawn later with the Figure C matplotlib code. The full 144-row
+  Excel table stays as the appendix/log version.
+
+---
+
+## 4. Step 10 - service level -> system level (Figure H), on `step9` (rewritten 08.10.2026)
+
+**Definition:** in the system-level analysis, the *system* is the three services (npm, pip, Maven) under the **same** configuration
+combination (A, B1, B2, C1). The system is compromised if at least one service has result
+`malicious_resolved`. Maven's B2c cells are *invalid* (not expressible), not "not compromised" - so
+for every combination it is counted explicitly for how many services the configuration is valid.
+
+Three new columns:
+
+```
+J (valid_cell in this row):              =ZÄHLENWENN(E2:G2;"<>invalid_configuration")
+K (count malicious_resolved in this row): =ZÄHLENWENN(E2:G2;"malicious_resolved")
+L (system-level):                         =WENN(J2=0;"all invalid cells";WENN(K2=0;"0 compromised";WENN(K2=J2;"all compromised";"partly compromised")))
+```
+
+**What column J means :** J says **for how many of the three services this configuration combination is valid,
+i.e. can be applied at all**: 3 normally, 2 under B2c (a POM requires a `<version>`, so Maven cannot
+express it), 0 for A3 x B1c. A cell with result `resolution_error` **is counted in J** - the
+configuration could be applied, the package manager simply could not resolve the packages and the
+build failed. Only *invalid* combinations are left out.
+
+### 4.1 The four labels, defined exactly
+
+| label | definition | in words | combinations |
+|---|---|---|---|
+| `all invalid cells` | J = 0 | the configuration cannot be applied in any ecosystem (A3 x B1c) - there is no system to judge | 9 |
+| `0 compromised` | J >= 1 and K = 0 | the configuration is validly applied to one or more services, and **no** service resolved the attacker's package | 54 |
+| `partly compromised` | 0 < K < J | at least one service resolved the attacker's package and at least one did not | 11 |
+| `all compromised` | K = J >= 1 | **every service the configuration is valid for** resolved the attacker's package | 70 |
+
+Two things to be able to defend:
+
+- **`partly compromised` does not need an extra condition "J >= 1" - it is implied.** If J = 1 then K
+  is either 0 (-> `0 compromised`) or 1 = J (-> `all compromised`), so `0 < K < J` can only happen
+  when J >= 2. In my data the 11 rows which has result "partly compromised" all have J = 3 or J = 2.
+- **"all compromised" means all services the configuration is valid for, not always three.** 
+
+### 4.2 Breakdown by J (so the labels cannot be misread)
+
+| label | J = 3 (all three ecosystems) | J = 2 (B2c, Maven invalid) | total |
+|---|---|---|---|
+| `all compromised` | 35 | 35 | 70 |
+| `0 compromised` | 48 | 6 | 54 |
+| `partly compromised` | 7 (3 with K = 1, 4 with K = 2) | 4 (K = 1) | 11 |
+
+The 11 rows has "partly compromised", named: **3** cells compromised with K = 1 are `mvn_A3_B1a_B2b_C1{a,b,c}` (only Maven cell compromised, the
+`id=central` leak); **4** with K = 2 which are compromised are B1d x B2b x C1b (npm and Maven cells compromised, pip has
+`resolution_error`); **4** with J = 2, K = 1 are B1d x B2c x C1b (npm cell compromised, pip resolution error, Maven
+invalid).
+
+### 4.3 The counts and what they say
+
+```
+=ZÄHLENWENN(L2:L145;"0 compromised")                 -> 54
+=ZÄHLENWENN(L2:L145;"partly compromised")            -> 11
+=ZÄHLENWENN(L2:L145;"all compromised")               -> 70
+=ZÄHLENWENN(L2:L145;"all invalid cells")             ->  9    (A3 x B1c; 54 + 11 + 70 = 135 valid configuration combinations)
+=ZÄHLENWENNS(L2:L145;"all compromised";J2:J145;3)    -> 35    (one configuration make all three service compromised (count only when J = 3))
+```
+
+- **Uniform policy:** of the 135 valid configuration combinations, **81 (60 %) leave the system
+  compromised** (70 all + 11 partly); 54 leave it with no compromised service ("0 compromised"). Those 54 are the
+  **45 pinned combinations (B2a)** plus **9 non-pinned ones where no service can reach a public
+  source** (A2 x B1a: 6; A3 x B1a x B2c: 3) - IMPORTANT: those 9 configuration have no compromised service only because
+  the builds **broke** (resolution error), not because a service resolved the private package. The label
+  `0 compromised` must always be reported with this split; it does not mean "secure".
+- **Among the 90 non-pinned configuration combinations, 81 (90 %) compromise the system.** 
+- **one configuration make all three service compromised (count only when J = 3) = 35.**  means: how many single organisation-wide configuration
+  decisions compromise **all three** services at once. The formula adds the condition `J = 3` on
+  purpose, so that B2c combinations - where Maven does not exist at all - cannot be counted as "all
+  three"; that is why it is 35 and not 70. These are the B2b combinations with a public path (B1b,
+  B1c, B1d under C1a/C1c, and B1a with a group repository A1a/A1b). This is the multi-ecosystem
+  observation
+- **Partly compromised = 11, every one traces to a known cause:** 8 x pip C1b phase 1
+  (B1d x B2b/B2c x C1b) and 3 x Maven `id=central` (A3 x B1a x B2b, all C1). Without those
+  two effects the system-level outcome would be strictly **all-or-nothing**: a configuration combination that
+  lets one service reach a public source lets every service reach it.
+
+
+
+### 4.5 Figure H, Excel version
+
+Conditional formatting on column K of `step9`: 0 -> green, 1-2 -> orange, 3 -> red, `all invalid
+cells` rows grey. This is the "system-level outcome grid" from the plan. The compact version
+(rows = A x B1, columns = B2, two blocks "C1a = C1c" / "C1b" now that C1a = C1c is proven) can be
+drawn with the Figure C matplotlib code later.
+
+---
+
+## 5. Status of the analysis schedule after today
+
+| step | produces | status |
+|---|---|---|
+| 5 | Figure C | done (08.09) |
+| 6 + 7a | per-variable table + rule tested, 0 wrong on 360 | done (10.09) |
+| 7b | minimal pairs + 5-cell write-up | done (14.09); npm C1 EP = 12 traced (15.09) |
+| 9 | Figure G + disagreement list with causes | **done** (15.09 + 20.09; compact figure pending) |
+| 10 | Figure H, system level | **done** (20.09; compact figure pending) |
+| 8 | Figure F, delivery path | open (numbers already in summary Finding 3) |
+| 1 + 2 + 3 | section 7.1 write-up | open |
+| 11 | synthesis, answer to sub-RQ1 | open |
+| 4 | error-cause taxonomy | optional |
+
+## Next steps
+- [ ] Sort `step9` by A, B1, B2, C1 (Daten -> Sortieren, four levels) so C1a/C1b/C1c of one coordinate are consecutive.
+- [ ] Tick Steps 9 and 10 in `docs/summary_result_analysis.md` section 10; record the closed open
+      item "npm C1 EP = 12 = 6 cells x 2 pairs" and the four pointwise identities (C1a = C1c,
+      npm B1b = B1c = B1d, A1a = A1b in Excel).
+- [ ] Compact Figure G and Figure H with the Figure C matplotlib code (36 rows x two blocks).
+- [ ] The small script fixes from summary section 10 (`step7b_five_cells_evidence.py` empty-field
+      text + the other three npm cells; pair-listing function in `step7b_minimal_pairs_table.py`;
+      stale "31 + 4" line in the analysis plan file).
+- [ ] Step 8 (Figure F) - one `SEARCH()` helper column on `pk1_url` + a pivot, plan Step 8.
+

@@ -398,47 +398,6 @@ def test_rule(valid_rows):
 # the public registry is not reachable). 
 
 
-def print_not_pinned_private_cells(valid_rows, results):
-    print('')
-    print("-------- investigate the not pinned cells with result 'private_resolved' --------")
-    print("Question: the version was NOT pinned, so why did these cells not get the attacker's 1.0.3? What did they resolve instead, from which repository, and why did the build complete at all?")
-    
-    print()
-
-    number_of_cells = 0
-
-    for row in valid_rows:
-        if row[column_B2] != "B2a" and row[column_result] == "private_resolved":
-            number_of_cells = number_of_cells + 1
-
-            # only the Nexus repository name out of the long URL:
-            # cut the URL at "/repository/", take the part after it, then take
-            # everything up to the next "/"
-            repository_name = row[column_pk1_url].split("/repository/")[1].split("/")[0]
-
-            # the same configuration, but with C1a / C1c instead of C1b
-            key_C1a = (row[column_ecosystem], row[column_A], row[column_B1], row[column_B2], "C1a")
-            key_C1c = (row[column_ecosystem], row[column_A], row[column_B1], row[column_B2], "C1c")
-
-            print("cell:", row[column_cell_id])
-            print("    resolved version of the two internal packages :",
-                  row[column_pk1_version], "/", row[column_pk2_version],
-                  "  (installed in setup phase: 1.0.0)")
-            print("    resolved from  :", repository_name)
-            print("    result of cell which has same A, B1, B2, but has C1a      :", results[key_C1a])
-            print("    result of cell which has same A, B1, B2, but has C1c      :", results[key_C1c])
-            print()
-
-    print("number of not pinned cells with result private_resolved:", number_of_cells)
-    # print()
-    # print("How to read this:")
-    # print(" - version 1.0.2 (not 1.0.0) means the package manager DID take the highest")
-    # print("   version it could see. 'highest version wins' was active; the attack failed")
-    # print("   only because 1.0.3 was not reachable from the configured repository.")
-    # print(" - all 5 cells are C1b (package update). The same configuration under C1a and")
-    # print("   C1c ends with resolution_error, so the pipeline operation type is the reason")
-    # print("   the build completed, not the registry setup.")
-
 
 
 # -------------------------------------------- main () ---------------------------------
@@ -470,7 +429,7 @@ def main():
     #rule_about_malicious(row)
     test_rule(valid_rows)
 
-    print_not_pinned_private_cells(valid_rows, results)
+    
 
 
 
