@@ -4607,3 +4607,715 @@ drawn with the Figure C matplotlib code later.
       stale "31 + 4" line in the analysis plan file).
 - [ ] Step 8 (Figure F) - one `SEARCH()` helper column on `pk1_url` + a pivot, plan Step 8.
 
+
+# 08.10.2026 - sub-RQ2 SCA tool selection: wrote down the whole screening result (work itself was done 29.08 - 08.09.2026)
+
+**Why this entry exists.** The log entry `# 29.08.2026` documents only the *design* of the tool
+selection (the 4 stages, the candidate sources - 3 then, 2 now, see section 2 - the 6 hard
+requirements, the search queries). The
+*outcome* - who was dropped, who survived, and which 3 tools were chosen - was written into two
+working files but never into this log. This entry closes that gap. Nothing here is new work; it is
+the content of those files, verified against the spreadsheet today.
+
+**The evidence files:**
+
+| File | What it holds |
+|---|---|
+| `sub-RQ2_tool_selection/dc_repos_github_290826.csv` | frozen raw GitHub API output, 46 repos (never regenerated) |
+| `sub-RQ2_tool_selection/gitlab_dc_repos_290826.csv` | frozen raw GitLab output, 10 projects |
+| `sub-RQ2_tool_selection/sca_tool_screening_v2.xlsx` | the working screening sheet, one row per tool, 16 columns |
+| `sub-RQ2_tool_selection/theoretical_evaluation_tables.md` | Stage 2, the 14-column table per surviving tool |
+| `sub-RQ1_result/analysis/sub-RQ1_RQ2_process.md` (Parts 6-9) | the short, plain-English version of the same story |
+
+Documentation data for Stage 2 was collected on **2026-09-06**. No tool was executed for any of it -
+every entry comes from the tool's own documentation, its repository, or its package metadata.
+
+---
+
+## 1. The definition I filter with, and the 3 screening questions
+
+I read 8 papers for a definition of "SCA tool". They fall into two groups: (1) a tool that lists a
+project's third-party components and then checks some security or licence property of them, and
+(2) a scanner **plus a vulnerability database**. **I use group 1.** Group 2 describes how a tool
+works, not what it does, and it would throw out papers that are plainly about SCA (Ombredanne 2020
+is licence-only). It would also throw out **Syft**, which has no vulnerability database but which I
+took from Ding and Cui long before I looked at any GitHub tool - so group 2 breaks my *literature*
+tools too, not only the GitHub ones.
+
+Stage 1 therefore asks three questions, one per part of the definition:
+
+| # | Function | Question | Fail means |
+|---|---|---|---|
+| Q1 | inventory | Is a **software project** the unit of analysis, and is the dependency list taken from the project's own files (manifest, lockfile, source, build output)? | unit is one package name, a domain, a URL or a wordlist -> not an SCA tool |
+| Q2 | analyse | Does it check the components against a **decision criterion** - a public registry, an advisory database, a licence list, or a stated policy/consistency rule? | listing only -> inventory-only, drop |
+| Q3 | report | Does it report over the **project's whole dependency set**? | a single answer about one supplied package -> drop |
+
+The three Source A tools do **not** go through this filter: the paper already calls them SCA tools.
+
+## 2. The candidate pool: 66 rows, and where each one comes from
+
+`sca_tool_screening_v2.xlsx`, sheet `dc_repos`, rows 2-67:
+
+| Source | How found | Rows |
+|---|---|---|
+| **A** - literature, first pool | Ding and Cui (ICFTIC 2024): Syft, OpenSCA-cli, OWASP Dependency-Check | 3 |
+| **A** - literature, fallback pool | Rasheed et al. (2026), arXiv:2604.21278: Grype, Trivy, CVE-Bin-Tool, OSV-Scanner. **Drawn only after the first pool failed** (section 7) | 4 |
+| **B** - GitHub full-text search | `"dependency confusion" fork:false archived:false pushed:>2024-01-01 stars:>=1`, 46 hits on 29.08.2026 | 46 |
+| **B** - snowballing inside the GitHub results | found inside a link-collection repo that the GitHub search itself returned: `synacktiv/DepFuzzer`, `benjamin-mauss/depenfusion`, `doyensec/confuser`. The column `found_via` records the source link | 3 |
+| **B** - GitLab search | exact search `"dependency confusion"`, projects scope, archived excluded, 10 hits | 10 |
+| | | **66** |
+
+**Correction - there are 2 candidate sources, not 3. This supersedes sections 1 and 7 of the
+`# 29.08.2026` entry**, which introduced snowballing as a separate "Source C". The three snowball
+finds are GitHub repositories like all the other Source B rows, so they belong to Source B. The
+split that matters is only **A = named in a paper** vs **B = found by platform search**.
+
+What this does *not* change:
+
+- **Snowballing stays a named, documented search method** inside Source B (backward reference
+  search, citable to Wohlin 2014), and the `found_via` column still records the source repo for each
+  of the 3 finds, so they remain distinguishable from the 46 phrase-search hits.
+- `source = "B - Github"` on those 3 rows in `sca_tool_screening_v2.xlsx` is therefore **correct as
+  it stands** - nothing in the sheet needs fixing.
+- The **metadata-bound blind spot stays its own limitation**: GitHub repo search indexes only name,
+  description and topics, never the README. `DepFuzzer` has an empty description and no topics, so
+  no phrase search could ever have found it, whatever wording I used. That is a different blind spot
+  from the terminology-bound one (missed because of different wording), and both still have to be
+  reported.
+
+Note on the numbers: Parts 7-8 of `sub-RQ1_RQ2_process.md` say 62 tools / 24 dropped / 38 read.
+Those are the numbers **before** the 4 Rasheed tools were added and before `depenfusion` was moved
+into the dropped group for being outside the time window (last push 2023-07-25; my window starts
+2024-01-01). The sheet as it stands today gives 66 / 25 / 41. Same screening, later state of the file.
+
+## 3. Stage 1 result: 25 dropped on sight, 41 read, 32 are SCA tools
+
+- **25 dropped without reading the README** (column `drop reason`): slide decks, attack demos,
+  proof-of-concept exploits, RCE payloads, written guides, empty repositories, GitLab copies of a
+  GitHub project that is already in the list, and one repo outside the time window. Nine of the ten
+  GitLab hits are in this group (0 stars, demos or duplicates) - **GitLab contributed no tool that
+  survived Stage 1.**
+- **41 read** -> **32 yes**, **8 no**, **1 unknown**.
+  - The 32 "yes" are 25 Source B tools + the 7 Source A tools.
+  - The 8 "no" are bug-bounty helper tools: they take **one package name** or **a website address**
+    as input, not a project, so they fail Q1. Example from the sheet: `0xDepCheck`, run as
+    `0xDepCheck <package-name>` - there is no project anywhere in that command.
+  - The 1 "unknown" is `supplyshark/supplyshark`: its README never says which manifest files it
+    parses, so Q1 cannot be answered without reading the code.
+- **No keyword pre-filter was used.** I tested one (drop anything containing "poc"/"exploit"/"demo")
+  and it would have wrongly dropped `snyk-labs/snync`, a real Snyk detection tool whose description
+  says "mitigate". Manual screening with one recorded reason per row stays auditable; a keyword
+  filter does not.
+
+## 4. Stage 3, part 1: HR2 cuts the 25 Source B tools down to 10
+
+HR2 = must support **all three** ecosystems (npm, Python, Maven), because the experiment matrix is
+3 x n. **Only 10 of the 25 claim all three** (column `supported ecosystems`):
+
+`visma-prodsec/confused`, `th3-j0k3r/DepConfuse`, `6mile/super-confused`,
+`InTruder-Sec/dependency-confusion-tool`, `serhanwbahar/dep-hallucinator`, `cognitivegears/depgate`,
+`D3Ext/dep-scanner`, `BlackHatExploitation/depcheck`, `robotshell/konfusio`, `synacktiv/DepFuzzer`.
+
+The other **15 fail HR2**, nearly all for the same reason: they are npm-only or npm + PyPI with no
+Maven support at all (`snync`, `dustilock`, `DCHero`, `Loki`, `DeCAF`, `depen-find`, `Gitox`,
+`DeepConfusion`, `DepRaptor`, `lockaudit`, `doyensec/confuser` and others). Dependency-confusion
+tooling on GitHub is overwhelmingly built for npm; Maven support is the rare one.
+
+## 5. Stage 3, part 2: HR3 cuts those 10 down to 3
+
+HR3 = must read **the files my application really has**. I did not add or change any file in
+`services/` to make a tool work - that rule was fixed in the screening plan.
+
+| Ecosystem | Files that actually exist |
+|---|---|
+| npm | `services/nodejs/package.json`, `package-lock.json` (+ `.npmrc`) |
+| Python | `services/python/pyproject.toml`, `pylock.test.toml`, `pylock.test3.toml` (+ `pip.ini`) |
+| Maven | `services/java/pom.xml` |
+
+Rule applied: **one readable manifest per ecosystem is enough.** The decisive file is
+`pyproject.toml` - it is the *only* place my Python service declares its dependencies.
+
+| Tool | HR3 outcome | Why |
+|---|---|---|
+| `super-confused` | **PASS** | npm `package.json` + `package-lock.json`; Python **`pyproject.toml`**; Maven `pom.xml` |
+| `DepGate` | **PASS** | the same three; Python side is `requirements.txt` + **`pyproject.toml`** per its own `docs/supported-package-managers.md` |
+| `DepCheck` | **PASS** | the same three, and it can be pointed at a directory and find them itself |
+| `confused` | fail | Python side is `requirements.txt` only |
+| `dep-hallucinator` | fail | Python side is `requirements.txt`, `poetry.lock`, `Pipfile.lock` - no `pyproject.toml` |
+| `konfusio` | fail | Python side is `requirements.txt` only; it also reaches files by crawling a URL instead of reading a local project |
+| `InTruder-Sec/dependency-confusion-tool` | fail | a wrapper around `confused`, so the same Python gap; it also fetches files from GitHub instead of a local checkout |
+| `DepConfuse` | fail | parses **no** manifest at all - its input is a CycloneDX SBOM or a PURL list produced by another tool |
+| `dep-scanner` | not verifiable | the README never names the manifest filenames it reads, so HR3 cannot be decided from documentation |
+| `DepFuzzer` | not verifiable | the README says "files where dependencies are declared, for example ..." and gives no complete list |
+
+**Gap in the sheet, recorded here on purpose:** in `sca_tool_screening_v2.xlsx` the column
+`hard-requirement filter reason` is filled in only for the 10 tools that reached Stage 2 - the 3
+above plus the 7 Source A tools. For the 7 tools in the lower half of the table the reason sits
+implicitly in the `supported ecosystems` and `input manifest files` columns. The table above is that
+reasoning written out; if I am asked about those 7, this log entry is where the answer is recorded.
+
+## 6. The main finding: all three Source A tools from Ding and Cui fail - for the same reason
+
+**None of them analyses `pyproject.toml` on its own**, and that is my only Python manifest. All three
+pass HR2, HR4, HR5 and HR6, and pass npm and Maven inside HR3. They die on Python:
+
+- **Syft** - has no `pyproject.toml` parser at all. Its Python cataloger globs are
+  `*requirements*.txt`, `poetry.lock`, `Pipfile.lock`, `setup.py`, `uv.lock`, `pdm.lock` and
+  installed `dist-info` / `egg-info` metadata. Checked in the source, not in the README:
+  `syft/pkg/cataloger/python/cataloger.go`.
+- **OpenSCA-cli** - its Python files are `Pipfile`, `Pipfile.lock`, `setup.py`, `requirements.txt`,
+  `requirements.in`. A code search of the repository for "pyproject" returns **zero** hits.
+- **OWASP Dependency-Check** - the clearest case: it *sees* the file and then deliberately refuses
+  it. Source comment in `PoetryAnalyzer.java`: *"exit as we can't analyze pyproject.toml -
+  insufficient version information"*, and the tool logs *"Python 'pyproject.toml' found and there is
+  not a 'poetry.lock' or 'requirements.txt' - analysis will be incomplete"*
+  (https://github.com/dependency-check/DependencyCheck/issues/6303). Its Python analyzer is also
+  marked *experimental* in its own documentation.
+
+**Two workarounds I rejected, on purpose:**
+
+1. Point Syft at `services/python/.venv/**/site-packages/*dist-info/METADATA`. That reads what is
+   *installed*, not what the project *declares*, and it is not a manifest. It would be a different
+   measurement.
+2. Add a `requirements.txt` or a `poetry.lock` to the Python service. All three first-pool tools
+   would then work - but the screening plan says the application's configuration files are not
+   changed to accommodate a tool. The application is the object under test.
+
+## 7. The fallback the plan foresaw, and what it produced
+
+The 29.08 design already said: the general-purpose slot is a **tool category**, not those three
+specific tools, and if none of them passes the hard requirements, a replacement is drawn from
+another academic source. That contingency fired here.
+
+**Replacement source:** Rasheed, McPhee, Patterson, MacDonell & Dietrich (2026), *Hidden Dependencies
+and Component Variants in SBOM-Based Software Composition Analysis*, arXiv:2604.21278, which
+evaluates four tools and describes them as "state-of-the-art and used in several studies".
+
+| Tool | Outcome | Reason |
+|---|---|---|
+| **Grype** | FAIL HR3 | it builds its inventory *with Syft*, so it inherits Syft's gap exactly - no `pyproject.toml`, and a search of the Syft repo for "pylock" returns zero hits. What Grype adds over Syft is the analysis half, but it cannot build the Python inventory in the first place |
+| **CVE-Bin-Tool** | FAIL HR3 | built around compiled binaries and SBOM input; its Python parser declares exactly one filename, `requirements.txt` (`cve_bin_tool/parsers/python.py`). It is also the only GPL-3.0 tool in the pool |
+| **Trivy** | **PASS** | see section 8 |
+| **OSV-Scanner** | **PASS** | but through the *lock file*, not the manifest |
+
+**Limitation I must state plainly wherever this source is cited: it is an arXiv preprint, not
+peer-reviewed.** I checked the peer-reviewed alternatives first and none of them can supply a
+fallback: the nine tools in Imtiaz et al. are all account-bound, single-ecosystem, or unnamed
+commercial products, and *Tool or Toy* evaluates neither Trivy nor OSV-Scanner. One point in the
+preprint's favour: Jens Dietrich is already in my bibliography as an author of the SCORED '24
+blind-spots paper.
+
+Second thing to state honestly: **the second pool was drawn after the first one failed**, not chosen
+in parallel. That order is legitimate because the plan names it as a contingency, but it must be
+visible in the write-up, not presented as if both pools had been planned from the start.
+
+## 8. Why Trivy and not OSV-Scanner
+
+| | Trivy | OSV-Scanner |
+|---|---|---|
+| reads `pylock.test.toml` | yes - **documented**, footnote *"Also `pylock.<identifier>.toml` per PEP 751"* | `pylock.toml` is documented; the **named** variant appears only in `osv-scalibr` source |
+| reads `pyproject.toml` | yes - documented, parsed next to the lock file to mark **direct** dependencies | **not documented** for OSV-Scanner itself |
+| adoption | 37,803 stars | 10,986 stars |
+| claims DC detection | no | no |
+
+Three grounds for Trivy: much wider adoption; it documents exactly the two things I need (PEP 751
+named lock files, and `pyproject.toml` next to the lock file to identify **direct** dependencies -
+which matters, because my two internal packages are declared as direct dependencies in
+`[project].dependencies`); and everything can be reviewed from documentation. For OSV-Scanner, the
+two facts that matter most rest on the source of a *different* repository, `google/osv-scalibr`.
+
+Correction already recorded in `theoretical_evaluation_tables.md`: an earlier draft credited
+OSV-Scanner with its own `pyproject.toml` extractor. That extractor belongs to `osv-scalibr`; a
+search of the `osv-scanner` repository returns no reference to it. OSV-Scanner stays as the backup,
+but its `pylock.test.toml` filename matching would have to be confirmed by a trial run first.
+
+One practical note: Trivy's rendered documentation site was **stale** when I checked it and omitted
+`pylock` entirely. Use `docs/guide/coverage/language/python.md` in the repository, not
+`trivy.dev/latest`.
+
+## 9. The three tools selected
+
+| Tool | Category | Why it is in |
+|---|---|---|
+| **super-confused** (`6mile/super-confused`) | claims DC detection | passes every requirement that can be checked from documentation |
+| **DepGate** (`cognitivegears/depgate`) | claims DC detection | the only candidate in the whole pool with no recorded limitation - 11 PyPI releases with matching git tags, a documented JSON/CSV output schema, and an API token that is explicitly optional |
+| **Trivy** (`aquasecurity/trivy`) | general-purpose SCA | replacement for the failed Ding and Cui tools; OSV-Scanner stays as backup |
+
+**The composition the plan asked for is intact: 2 tools that claim dependency-confusion detection +
+1 general-purpose tool that claims nothing of the kind.** Trivy's documentation never mentions
+dependency confusion, which is exactly what keeps the comparison meaningful - and it is the reason I
+refused to call this third slot a "negative control" back on 29.08: whether general-purpose SCA
+tools detect DC is the unknown that sub-RQ2 measures, so naming it a control would presuppose the
+answer.
+
+**Close, but not selected: DepCheck** (`BlackHatExploitation/depcheck`). It passes HR2-HR5 and reads
+all three of my manifests. Two reasons it lost the slot:
+
+1. **HR6 only partly.** No releases, no tags, not published on PyPI or npm. It can be pinned **only
+   by git commit SHA**. That is reproducible, but it is not a version number, and it is inconsistent
+   with how every other component in this setup is pinned.
+2. It ships an auto-exploit mode (`--exploit`) that generates and **publishes malicious packages to
+   public registries** (npm, PyPI, RubyGems, crates.io, NuGet, Packagist, Go, Maven). Only scan mode
+   would ever be used here, but the capability is in the tool. The repository also has no licence
+   file at all, so the reuse terms are undefined.
+
+Limitation to state for **super-confused** if it is kept: its GitHub repo has **no licence file**
+(the GitHub API reports none) while its npm package metadata declares ISC. It is free to use either
+way, but the licence status is ambiguous. It is also pinnable through npm only
+(`npm install super-confused@1.2.0`), not by a git tag, because the repo has no releases and no tags.
+10 stars, single maintainer.
+
+## 10. What is deliberately still open (it belongs to the technical evaluation, not here)
+
+- **HR1 was never evaluated** for any tool. "Runs inside my per-service CI pipeline" cannot be
+  decided from documentation - it is the one requirement that needs the tool actually executed.
+  That is by design: HR2-HR6 were used as a cheap documentation filter first, so the expensive
+  hands-on step stays small.
+- **Column 11 of every Stage 2 table - "reports resolved package origin URL" - is still TBD, and it
+  is the decisive column for the whole mechanism argument.** If a tool's output carries no
+  resolved-registry field, then a same-name-higher-version substitution is structurally invisible to
+  it. The *input* definitely carries it: `pylock.test.toml` records
+  `url = "http://localhost:8081/repository/pypi-group-public-first/packages/..."` per wheel. Whether
+  Trivy keeps that field in its JSON output is unverified.
+- **Column 13 - exit code / build-breaking behaviour - is TBD** for everything except
+  Dependency-Check (`--failOnCVSS`) and Trivy (`--exit-code`), and those are documented claims, not
+  measured behaviour.
+- **The input mode must be fixed and written down per tool before the measurement run**, because it
+  changes which packages get flagged:
+  - *super-confused* and *DepCheck*: both read `package.json` and `package-lock.json` - direct
+    declared dependencies vs. the full resolved tree including transitive ones.
+  - *DepGate*: for npm, if a lock file is present it analyses the **lock file** (direct +
+    transitive); `--direct-only` forces direct dependencies from `package.json` instead.
+  - *Trivy*: `pyproject.toml` gives the declared direct dependencies, `pylock.*.toml` gives the
+    resolved set **together with the origin URLs**. Which one is used must be stated.
+- **Figure 5.4** (the funnel) still has to be redrawn to show the corrected non-circular gate and
+  the **two** sources (A = literature, B = platform search, with snowballing as a second search
+  method inside B) - open since 29.08.
+- The `--cells` subset-rerun option of `central_automated_pipeline.py` is still not built; sub-RQ2
+  needs it to re-run only the cells that came out `malicious_resolved`.
+
+## 11. Details recovered from the original screening plan file
+
+Sections 1-10 above were written from the spreadsheet and from
+`sub-RQ1_result/analysis/sub-RQ1_RQ2_process.md`. The **original sub-RQ2 screening plan file had been
+deleted** by Claude Code's 30-day cleanup and was recovered on 08.10.2026 out of old session
+transcripts. It is now stored outside the repo at:
+
+- `D:\Master_Winfo\MA_Supply_chain_security\plan_archive\recovered\plan_sub-RQ2_tool_selection_screening_process.md`
+  (54 KB, written 05.09.2026, was `hello-i-have-two-zany-lovelace.md`)
+- `D:\Master_Winfo\MA_Supply_chain_security\plan_archive\recovered\plan_sub-RQ2_SCA_tool_definition_3-4_5-4-1.md`
+  (36 KB, the companion file holding the full definition argument with verified quotes)
+
+The archive's `INDEX.md` explains how both were recovered and that 1-2 short passages in each may be
+missing. Everything below comes from those two files and was not recorded anywhere else.
+
+### 11.1 Correction: HR2 is a **Stage 1** criterion, not Stage 3
+
+Sections 4 and 5 above call the ecosystem filter "Stage 3, part 1" and the file filter "Stage 3,
+part 2". **That labelling is wrong and this supersedes it.** The ecosystem check (HR2) was moved from
+Stage 3 to Stage 1 on **30.08.2026**. The counts in sections 4 and 5 are unaffected - only the stage
+name is.
+
+Why it was moved: the original design assumed Stage 1 would leave 15-20 survivors, so checking
+ecosystems after the table was affordable. The real Stage 1 survivor count came out at **40**, more
+than double. (That 40 is the plan file's figure, a snapshot taken on 30.08. The actual spreadsheet
+today gives **41 read / 32 "yes"** - see section 3 - because the 4 Rasheed tools were added later and
+`depenfusion` moved into the dropped group. Use the spreadsheet's numbers in the write-up; the 40 is
+only the reason the decision was taken.) Filling a 14-column table for 40 tools before checking a
+fact that is usually one line
+in a README is not efficient, and a tool without all three ecosystems is excluded anyway whatever the
+other 13 columns say. The check costs a 1-2 minute documentation skim per tool.
+
+**Transparency was kept:** a tool dropped here still gets a full row in the screening spreadsheet
+(name, URL, which ecosystems it really supports, reason). It just does not get a 14-column table
+entry. So the appendix table holds only tools that passed, while the spreadsheet stays the complete
+record of every candidate found.
+
+Which requirement is checked where, in full:
+
+| Hard requirement | Checked from | Applied at |
+|---|---|---|
+| HR2 - all 3 ecosystems | README skim | **Stage 1** (moved 30.08, was Stage 3) |
+| HR3 - reads this project's config files | table column 4 | Stage 3 filter |
+| HR4 - machine-parseable output | table column 8 | Stage 3 filter |
+| HR5 - free, no mandatory account | table columns 7, 9 | Stage 3 filter |
+| HR6 - version can be pinned | table column 10 | Stage 3 filter |
+| HR1 - actually integrates and runs | nothing on paper | **technical evaluation only** |
+
+**Limitation written into the plan:** documentation can be wrong or incomplete. A tool may claim
+Maven support and fail in practice, or not advertise Maven and still work. Both the Stage 1 ecosystem
+check and the Stage 3 filter are therefore *provisional* - technical evaluation can still disqualify
+a tool that passed on paper, and that has to be recorded when it happens.
+
+### 11.2 Stage 1 is five criteria in a fixed order, not one question
+
+I only recorded the three-question SCA test above. That test is **criterion 4 of five**, and the
+order matters: cheapest and most decisive first, so the expensive table stays small.
+
+| # | Criterion | Drops |
+|---|---|---|
+| 1 | Is it a tool at all? | blog posts, talk notes, writeups, awesome-lists / link collections (skim those once for tool names, then discard the repo) |
+| 2 | Is it a *detection* tool? | PoC / exploit scripts, deliberately vulnerable demo or lab apps |
+| 3 | Does it support npm **and** pip **and** Maven? | tools scoped to one or two ecosystems (promoted from Stage 3 on 30.08) |
+| 4 | Is it plausibly an SCA tool per Foundations 3.4? | applied via the Q1/Q2/Q3 test - **Stream B only** |
+| 5 | Is it maintained? | last push before **2024-01-01**, or **0 stars** |
+
+**Criterion 5 applies to every candidate from every stream**, not only as a side effect of the GitHub
+query. The reasoning: an abandoned tool is unlikely to still install against current npm/pip/Maven
+tooling (the same risk HR1 checks later), and one star from someone other than the author is a
+minimal external-validity signal. Applying those bars only where the search enforces them
+automatically, and skipping them for hand-found candidates, would hold searched tools to a stricter
+standard than snowballed ones for no reason.
+
+That rule was decided on 29.08.2026 because of a concrete case: `benjamin-mauss/depenfusion`, found by
+snowballing from the same guide repo as DepFuzzer - 14 stars (passes the star bar) but last pushed
+2023-07-25 (fails recency). It is recorded in the spreadsheet with its reason rather than silently
+left out, because the point of documenting Stage 1 is that every candidate that was *found* appears
+in the trail, kept or dropped.
+
+**Borderline cases on criterion 4** are admitted to the table and decided once column 5 (detection
+mechanism) is filled, since judging a thin tool often needs its mechanism.
+
+### 11.3 Why Stream A skips the SCA-definition test - the exact wording
+
+Section 1 above says only that the Stream A tools do not go through the filter. The justification
+matters, because otherwise it looks like one arm got an easier ride:
+
+> *Stream A tools are classified as SCA tools by the source from which they were drawn; that
+> classification is inherited rather than re-derived. Stream B candidates carry no such external
+> classification, so the definition of Section 3.4 is applied to each directly via the operational
+> test below. The criterion is the same in both cases; only the evidence supporting it differs.*
+
+Everything else is identical: **both streams enter the theoretical table, and both must pass the
+hard-requirement filter.** There is no Stream A exception anywhere else. Technically evaluating a
+tool that structurally cannot run against these services would produce no finding about DC detection
+- it would only re-establish an incompatibility the table already documents.
+
+Also: the DC-detection claim is **not a separate screening step**. For Stream B it is built into the
+search query, so every Stream B candidate satisfies it by construction. For Stream A it is not
+required at all. It is recorded per tool in column 6, where **typosquatting does not count as a DC
+claim** - different attack (misspelled name, not same-name-higher-version across a public and a
+private registry), and detecting one implies nothing about detecting the other.
+
+### 11.4 The definition argument in full (6 papers vs 2)
+
+Section 1 gives the short version. The real argument:
+
+**The dividing line is whether a definition makes the vulnerability database *constitutive* of the
+category - not how many properties it names.** That distinction does the work: Ombredanne names only
+licence compliance and Zhao et al. name only vulnerabilities, yet both are Family 1, because neither
+builds the database into the definition.
+
+- **Family 1 - functional / mechanism-neutral** (inventory + analysis, no database required):
+  Imtiaz/Thorn/Williams ESEM '21, Foo et al. ASE '19, Ombredanne *Computer* 2020, Ning et al. IEEE
+  Access, *Tool or Toy* JSS 2025, Zhao et al. ESEC/FSE '23.
+- **Family 2 - database-bound** (scanner + vulnerability DB): Dietrich et al. SCORED '24, Liu et al.
+  *Dirty-Waters* 2024.
+
+**Five reasons for Family 1** - I had only recorded three:
+
+1. Family 2 binds SCA to a *mechanism* rather than a *function*, so it excludes work published under
+   the SCA name - Ombredanne (peer-reviewed *IEEE Computer*, "Software Composition Analysis" in the
+   title, licence compliance only, no database) and Ning et al. (binary SCA, neither manifest nor
+   database). A definition that excludes acknowledged members of its own category is too narrow.
+2. The Family 2 statements are **self-scoping sentences inside vulnerability-reporting studies**, not
+   attempts at a general definition. Imtiaz et al. show the move inside one paper: §2 gives the
+   general definition, and the very next sentence narrows it *for that study* - "By the vulnerability
+   detection capability of SCA tools, we mean...". The authors flag the narrowing themselves.
+3. Family 2 would also disqualify **Syft**, which has no vulnerability database, yet Ding and Cui
+   evaluate it as one of "the current mainstream SCA tool[s]". So Family 2 breaks the
+   *literature-derived* Stream A, not only the DC arm - which is exactly why this choice cannot be a
+   tailored one. Inverted: Syft is positive evidence for Family 1.
+4. Dietrich et al.'s paper is titled *On the Security Blind Spots of Software Composition Analysis*:
+   it gives the sharpest Family 2 definition and then documents what that architecture misses. Cite
+   it for the narrow definition **and** for treating the database as current practice rather than a
+   defining property. Connect to the research gap in Chapter 4.
+5. **(missing from my earlier note, and the strongest)** Adopting Family 2 would answer sub-RQ2
+   **analytically instead of empirically**. A vulnerability database records facts about *published
+   package versions*; DC susceptibility is a property of the *consuming project's resolution
+   configuration* - an internal name being claimable on a public registry the resolver also consults.
+   Under Family 2 the answer follows from the definition and the experiment becomes pointless.
+   Present this as **circularity, not convenience**. Do not overclaim: an advisory database *can*
+   record a specific malicious package after publication; what it cannot record is that an internal
+   name is claimable.
+
+**Section 3.4 of the thesis still has to be rewritten.** The wording finalized on 30.08 still reads
+*"The main goal of SCA tools is to automate this process to identify and report vulnerabilities..."*
+- that is a Family 2 sentence and will be quoted back in the defence. The proposed replacement:
+
+> *An SCA tool takes a software project as input, generates an inventory of the third-party
+> components and dependencies the project is composed of, analyses one or more security- or
+> compliance-relevant properties of those components, and reports the result. Known vulnerabilities
+> are the most frequently analysed property, but the literature also treats license compliance and
+> component provenance as SCA functions.*
+
+The only phrase doing definitional work is **"one or more ... properties"** - that is the single
+point the argument has to defend. **Zhao et al. is the example to walk through by name in 3.4**: it
+is the hardest case for Family 1 and still lands there - a paper titled *Software Composition
+Analysis for Vulnerability Detection* that never makes the database constitutive and explicitly
+criticises Imtiaz's database-centrism.
+
+### 11.5 The Q1/Q2/Q3 test was deliberately changed - record it as a loosening
+
+Three changes from the earlier draft of the test, each for a reason unrelated to DC:
+
+1. Old Q2 ("a result for every dependency it found") was **too strong** - real SCA tools, including
+   OWASP Dependency-Check, report *findings*, not one row per clean dependency. Reworded as Q3.
+2. Old Q3 required comparison against an *external* source. **Broadened to "decision criterion"**,
+   because a tool may analyse an intrinsic property with no lookup at all (`kriskimmerle/lockaudit` -
+   "zero deps, no network"). Requiring a lookup would smuggle a Family 2 assumption back in. This is
+   a **genuine loosening that admits more tools - record it as such, not as a clarification.**
+3. The "borderline, keep" escape hatch on old Q3 is **removed**. It existed to protect
+   inventory-only tools, i.e. Syft; Stream A no longer passes through this test, so it is unnecessary.
+
+**Q1 borderline rule - decide recon-style tools by feasibility, not by definition.** Several
+candidates crawl a *deployed target* and rebuild a dependency list from fetched JS (`DepScout`,
+`konfusio`, `0xJS`, `Gitox`). Arguably they do inventory a project, so forcing a definitional verdict
+invites argument. The rule: do not litigate it - if a tool cannot be pointed at a local project
+checkout it fails **HR3** and drops there, as an integration failure. Reserve definitional drops for
+unambiguous cases whose unit of analysis really is a bare package name or domain -
+`KingOfBugbounty/Dependency-Confusion-Hunter`, `0xPedrop/0xDepCheck`, `supplyshark/supplyshark`.
+
+**Non-circularity, stated as two separate questions:**
+1. *"Is dependency confusion a vulnerability?"* - settled in 3.2 via Bos et al.'s classification of
+   DC as a package manipulation attack. Not reopened at screening.
+2. *"Can this specific tool detect dependency confusion?"* - this is sub-RQ2 itself, measured at
+   technical evaluation, never gated at Stage 1.
+
+Q2 asks only whether a tool evaluates its inventory against *some* decision criterion - not whether it
+has already been shown to catch DC. A tool needs only to be structurally the *kind* of tool that
+technical evaluation can meaningfully test.
+
+**Two supporting citations for 5.4.1, both external to me:** Ding and Cui's introduction cites
+`snync` as a tool that *"detects dependency obfuscation in npm by utilizing whether the package name
+is registered in a public registry"*, and describes Orca as parsing `requirements.txt` /
+`package.json`, extracting the dependency list, comparing it against the public PyPI and npm
+registries, and alerting on unregistered packages - that is exactly the Q1 -> Q2 -> Q3 pattern, in a
+published paper. Corroborating: `snyk-labs/snync` and `Checkmarx/dustilock` are published by
+commercial SCA vendors, so industry itself treats DC checking as within SCA scope. Lead with the
+peer-reviewed citation, use the vendor one second.
+
+### 11.6 Search details I had not recorded
+
+- **Sort by stars, not "Best match."** Best-match ranking is opaque and non-deterministic, so it
+  cannot be reproduced; star order is stable.
+- **Quoting the phrase drops exactly two repos** (48 -> 46), and the plan names them:
+  `andrewruba/potato` ("Zero *dependencies*. Infinite *confusion*.") and `wangsiyi7/cogloop`
+  ("surface *confusion* hotspots... Zero-*dependency* Node").
+- **Cross-platform deduplication rule:** the same tool can appear on both platforms (`confused` is
+  `visma-prodsec/confused` on GitHub and a low-star copy on GitLab). Treat the canonical/upstream
+  repo as the candidate, note the duplicate, and do not count it twice in the screening flow.
+- **Planned reproducibility figure:** record the screening as a flow with counts and an exclusion
+  reason per stage - `232 -> 153 -> ... -> n candidates -> shortlist -> 3 selected`.
+- **Stage 3 tie-break, never needed but pre-stated:** if more tools pass the filter than can be
+  evaluated in the time available, rank survivors by maintenance signal (column 10) and adoption
+  (stars), and record the cut-off applied.
+
+⚠️ **Number discrepancy to settle before the write-up.** The star distribution in the plan file and
+the one in my `# 29.08.2026` entry do not agree:
+
+| Threshold | plan file | log entry 29.08 |
+|---|---|---|
+| stars >= 0 | **153** | **134** |
+| stars >= 1 | 48 unquoted / 46 quoted | 48 unquoted / 46 quoted |
+| stars >= 2 | 29 | 28 |
+| stars >= 5 | 20 | 19 |
+| stars >= 10 | 12 | 11 |
+| stars >= 50 | 3 | 3 |
+
+**Neither figure is backed by an actual file.** The only number in this table that
+`sub-RQ2_tool_selection/` can evidence is the **46**: `dc_repos_github_290826.csv` holds exactly 46
+data rows plus a header, frozen on 2026-08-29. The whole `stars >= 0 ... >= 50` distribution was
+never exported - it exists only as prose in the plan file and in the 29.08 log entry, which is why
+the two drifted apart.
+
+So: **report the 46 and cite the CSV.** If the distribution is needed in 5.4.1 to justify the
+`stars:>=1` cut, it has to be re-measured and re-exported to a file, and the new measurement date
+stated - **re-running the query today will not reproduce either old number**, because stars and push
+dates drift and the `pushed:>2024-01-01` window keeps moving relative to them. Internally the plan is
+more consistent (it uses 153 twice and "105 of the 153 repos have zero stars" only works with 153),
+but that is an argument about the plan's own prose, not evidence from a file, so it does not settle
+anything.
+
+### 11.7 Stage 4: what happens if a DC tool is too thin to be an SCA tool
+
+The priority order I recorded on 29.08 has a consequence I had not written down. If a purpose-built
+DC checker is too thin to qualify as an SCA tool - e.g. it only checks whether package names exist on
+a public registry - **it cannot enter the final 3, even if that means the composition shifts to
+1 DC-specific + 2 general-purpose, or another mix.** The shift and its reason get recorded. Table
+column 5 (detection mechanism) is what exposes this during screening.
+
+"DC-specific" is also defined: **purpose-built for dependency-confusion detection**, which is what
+the Stream B search surfaces - not a general tool that merely mentions DC somewhere.
+
+The fallback rule had one clause I did not record: **check the replacement tool's own DC claim
+(column 6).** If the general-purpose replacement *also* claims DC detection, the final 3 becomes
+three DC-claiming tools and the intended category spread collapses. Prefer a fallback that does
+**not** claim DC detection; if none is viable, record that the spread could not be achieved and why.
+This is why Trivy's "no DC claim" (section 8 above) was a selection criterion and not just a nice
+property.
+
+### 11.8 Why the general-purpose tool is there - and how far its result may be pushed
+
+**What it is NOT: a population sample.** One tool cannot support "mainstream SCA tools cannot detect
+DC". The plan says in capitals: never write that sentence.
+
+**What it IS:** a second tool *category* in the comparison, whose outcome is genuinely unknown going
+in, and which is literature-anchored (Ding et al.) rather than an arbitrary pick.
+
+**The payoff is mechanism, not statistics.** If it does not detect, the finding is not "0/n detected"
+but *why*: an SBOM-inventory tool emits package name and version with no resolved-registry-origin
+field, so a same-name-higher-version substitution is structurally invisible to it - no data in its
+output could tell the internal package from the attacker's. That argument generalizes on
+architectural grounds rather than sample size, supporting a hedged claim such as: *"this suggests SCA
+tools whose output model omits resolved package origin cannot detect DC as a class, independent of
+vulnerability-database coverage."* This is the same move already used in sub-RQ1 on 09.08.2026
+(`dependency:tree` lacks resolved URLs, so `lockfile.json` was adopted instead) - applied to
+detection tooling instead of to evidence collection.
+
+**Claim bounding for the write-up.** The sampling does not support "SCA tools generally do/do not
+detect dependency confusion". It supports: *"among tools that advertise DC detection, [result]; for
+[named baseline tool], drawn from prior work, [result]."* Report the general-purpose tool as a named
+specific result (*"Trivy produced no DC alert in any vulnerable cell"*), never as a population claim,
+and generalize only through the mechanism argument.
+
+### 11.9 Defending the search platforms (anticipated question at the defence)
+
+Expected question: *"why only GitHub and GitLab - why not Bitbucket, or just Google?"*
+
+**Do not argue "because I use GitHub Actions."** The plan flags this as weak and easily rebutted - a
+CLI tool hosted on GitLab runs perfectly well inside a GitHub Actions runner. Hosting platform and CI
+compatibility are unrelated. Use these three instead, strongest first:
+
+1. **A bounded sampling frame is standard method.** Systematic literature reviews select specific
+   databases (IEEE Xplore, ACM DL, Scopus) rather than searching the whole internet. A defined,
+   indexed, documented source *is* the methodology, not a shortcut.
+2. **Reproducibility.** Both platforms give a structured project search with a stable, reportable
+   result count, and GitHub additionally has documented query qualifiers and an API, so anyone can
+   re-run the exact query. A Google search is personalized, non-deterministic, opaquely ranked and
+   has no stable count - a per-stage screening flow with verifiable counts would be impossible.
+3. **Coverage of where open-source tooling actually lives.** GitHub and GitLab are the two widely
+   used platforms on which developers and organizations publish open-source tools.
+
+### 11.10 The six limitations to document explicitly
+
+Sections 1-10 carry only two of these (terminology-bound and metadata-bound). The full list:
+
+1. **`n = 3`** is a feasibility constraint, not a statistically motivated sample size.
+2. **Terminology-bound search.** Tools that detect the DC signal but describe it with other wording
+   (namespace collision, package substitution) are absent from the candidate pool.
+3. **Metadata-bound search.** GitHub repo search indexes name, description and topics - never the
+   README. A repo with an empty description and no topics is invisible whatever its terminology
+   (confirmed: `synacktiv/DepFuzzer`, 96 stars, `description: null`, `topics: []`). `in:readme`
+   returns 608 instead of 46, infeasible to screen by hand. Snowballing partially mitigates this but
+   does not guarantee completeness.
+4. **Positive-only dataset.** *(not recorded anywhere before - important)* Only `malicious_resolved`
+   cells are scanned, so only **recall and false-negative rate** are computable. `private_resolved`
+   cells are deliberately not included, so **no false-positive rate and no precision are reported.**
+5. **Platform-bound search.** GitHub and GitLab only; tools hosted solely on Bitbucket or self-hosted
+   forges are not represented.
+6. **Popularity threshold.** `stars:>=1` removed 105 zero-star repositories; a capable but obscure
+   tool with no stars would not appear in the pool.
+7. **Literature-bound Stream A.** Stream A covers only the SCA tools used by Ding and Cui, because
+   that is the single paper addressing an attack class comparable to DC. SCA tools evaluated in other
+   papers - which assess CVE/database detection rather than this attack class - are not in the pool.
+
+### 11.11 Verification checklist and the two edits 5.4.1 still needs
+
+The plan's own verification list, none of which is ticked yet:
+
+- [ ] Confirm the GitHub query reproduces the recorded result count on the recorded date.
+- [ ] Confirm every excluded repo has a recorded exclusion reason mapping to one of the pre-stated
+      criteria.
+- [ ] Confirm the three selected tools each support npm, pip and Maven.
+- [ ] Confirm each selected tool's claimed input files (column 4) are **actually present in the
+      sub-RQ1 artifact outputs** for all three services.
+
+Two sentence-level edits the existing 5.4.1 text still needs:
+
+1. Change the removal rule (*"tools producing no DC alerts will be removed from the candidate list"*)
+   into a recorded capability-screen outcome that informs, but does not by itself decide, final
+   selection.
+2. State that the final-3 gate is **integration feasibility**, and that the composition deliberately
+   spans tool categories: 2 DC-specific + 1 general-purpose mainstream SCA tool.
+
+Plus, from 11.1 and 11.4: Figure 5.4 must show the ecosystem check at **Stage 1**, and Section 3.4
+must be rewritten to the Family 1 wording.
+
+### 11.12 One terminology note
+
+The plan file says **"Stream A" / "Stream B"**, while the spreadsheet column and sections 1-10 above
+say **"Source A" / "Source B"**. Same thing. The spreadsheet's `source` column values are
+`B - Github` (49 rows) and `B - Gitlab` (10 rows) - **those two values only**. The plan file says the
+column also carries a third value `B (snowball)`; **it does not** (`sca_tool_screening_v2.xlsx`
+wins - it is the actual file). In the real sheet the three snowball finds sit under `B - Github`
+and are distinguished by the **`found_via`** column, which holds the referring repo's URL. That is
+also consistent with the decision recorded in section 2 above: the snowball finds *are* GitHub
+repositories, so `B - Github` is correct for them.
+
+Pick one word before writing 5.4.1 and use it everywhere, including in Figure 5.4.
+
+### 11.13 Conflict register - where the plan file disagrees with the actual files
+
+**Rule applied throughout section 11: where the recovered plan file and the files in
+`sub-RQ2_tool_selection/` (or the real `services/` tree) disagree, the actual files win.** The plan
+was written on 05.09 and describes what was *intended*; the files record what *is*. **Three**
+conflicts found, all resolved in favour of the files.
+
+**Not a conflict - the HR3 file list. The plan file's list is the correct one and is what the
+write-up should use:**
+
+| Ecosystem | Files HR3 is tested against |
+|---|---|
+| npm | `package.json`, `package-lock.json` (+ `.npmrc`) |
+| pip | `pyproject.toml`, `pip.conf`, `pylock.toml` (PEP 751, generated by `pip lock` for C1c) |
+| Maven | `pom.xml`, `lockfile.json`, `pom.lockfile.xml` (maven-lockfile plugin) |
+
+Several of these are **absent from the git checkout on the development machine, and that is normal**:
+the experiment runs on the **self-hosted GitHub Actions runner**, and the configuration is applied
+*there*, not here. `lockfile.json`, `pom.lockfile.xml` and the `pylock` files are produced during the
+run, inside the runner, and `pip.conf` is the Linux-container config file (the `pip.ini` lying in the
+repo is its Windows-side counterpart on the dev machine). So an `ls services/` on this laptop showing
+only `pom.xml` for Maven says nothing about what a scanner will find at scan time.
+
+**Why this matters for HR3 specifically:** HR3 asks whether a tool can read *the files that exist
+when the tool runs*, which is inside the runner, mid-pipeline. Judging it from the dev checkout would
+understate what is available - especially for Maven, where the two lock files carry exactly the
+resolved-origin information that table column 11 is about. The
+`sub-RQ2_tool_selection/theoretical_evaluation_tables.md` row "Files present in this project" is a
+**dev-machine snapshot**, narrower than the runtime picture, and section 5 above inherits that
+narrower view.
+
+It does not change any outcome recorded above: every HR3 failure in sections 5 and 6 was a **Python**
+failure (`pyproject.toml`), and no tool was ever excluded on Maven grounds. But the thesis text
+should name the plan's list, not the laptop's.
+
+One detail from the evaluation table is still worth keeping, because it decided a selection:
+the Python lock files appear under the PEP 751 **named** form (`pylock.test.toml`,
+`pylock.test3.toml`), not the plain `pylock.toml`. That is the exact fact behind choosing Trivy over
+OSV-Scanner in section 8 - Trivy documents the `pylock.<identifier>.toml` pattern, OSV-Scanner
+documents only `pylock.toml`.
+
+**1. The `source` column has no `B (snowball)` value** - see 11.12. Spreadsheet wins: 49 ×
+`B - Github`, 10 × `B - Gitlab`, snowball finds marked by `found_via`.
+
+**2. The star distribution (153 vs 134)** - see 11.6. No file evidences either; only the 46 in
+`dc_repos_github_290826.csv` is citable.
+
+**3. The Stage 1 survivor count (40)** - see 11.1. The spreadsheet's 41 read / 32 "yes" governs; 40
+is a 30.08 snapshot that explains why the ecosystem check was moved.
+
+**No conflict found** in the theoretical table's column numbering: the plan's 14 columns and the
+columns actually used in `theoretical_evaluation_tables.md` line up one-to-one, so every "column N"
+reference in section 11 is valid against the real file. Only two headings were reworded in the actual
+file (plan "GitHub link" → "Repository", plan "License / free & open-source" → "Licence / FOSS").
+
+## Next steps
+
+- [ ] Technical evaluation of the 3 selected tools: install them pinned, run them against real
+      cells, and fill column 11 (origin URL in the output) and column 13 (exit code) for each.
+- [ ] Fix and record the input mode per tool (the list in section 10).
+- [ ] Redraw Figure 5.4.
+- [ ] Section 5.4.1 of the thesis names Syft, OpenSCA and Dependency-Check - it must now also report
+      that all three failed, which requirement each failed on, where the replacement came from, and
+      that the replacement claims no DC detection.

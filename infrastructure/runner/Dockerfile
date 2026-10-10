@@ -2,7 +2,7 @@
 # Base image        : Ubuntu 24.04
 # Toolchains (pinned) : Node 24.18.0, npm 11.16.0, Python 3.12.4, pip 26.2.1,
 #                     Temurin JDK 25.0.3, Maven 3.9.16, Git 2.45.2
-# Runner binary     : v2.335.1 (SHA-256 verified)
+# Runner binary     : v2.338.1 (10.10.2026: the previous version 2.335.1 is deprecated)
 # Registration mode : persistent (single long-lived runner)
 # Token supply      : runtime enviroment variable (token is short-lived, should not be embedded inside container)
 
@@ -172,10 +172,11 @@ RUN mkdir -p /home/runner/.m2
 COPY --chown=runner:runner settings.xml /home/runner/.m2/settings.xml
 
 
+# stand 10.10.2026: the previous used runner version v2.335.1 is deprecated! 
+# now change the version to 2.338.0
 
-# choose to use GitHub Actions runner binary v2.335.1 (Linux x64).
 # SHA-256 verification means the build fails if the tarball is correpted (protect integrity)
-# The checksum source: https://github.com/actions/runner/releases/tag/v2.335.1
+# The checksum source: https://github.com/actions/runner/releases/tag/v2.338.0
 
 # IMPORTANT!: This is the one version in the image that may need to be changed during experiments.
 # GitHub enforces a 30-day update window before a runner stops receiving jobs.
@@ -183,8 +184,8 @@ COPY --chown=runner:runner settings.xml /home/runner/.m2/settings.xml
 # source about github rules: https://docs.github.com/en/actions/reference/runners/self-hosted-runners
 # remove tar.gz file at the end to save space
 
-ARG RUNNER_VERSION=2.335.1
-ARG RUNNER_SHA256=4ef2f25285f0ae4477f1fe1e346db76d2f3ebf03824e2ddd1973a2819bf6c8cf
+ARG RUNNER_VERSION=2.338.0
+ARG RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
 
 RUN curl -fsSL -o runner.tar.gz \
       "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \

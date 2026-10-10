@@ -27,6 +27,12 @@ on:
         required: true
         type: choice
         options: [C1a, C1b, C1c]
+      run_sca:
+        description: "sub-RQ2 probe: also run the SCA tool after dependency resolution"
+        required: false
+        type: choice
+        default: "off"
+        options: ["off", "on"]
 
 
 # use self-hosted github actions runner to execute the job
@@ -226,6 +232,55 @@ jobs:
           fi
 
 
+
+
+      # sub-RQ2 test round: run Trivy against this cell's files.
+      # the switch input run_sca is turned on, so this step can be run or not run.
+      # Three scans per cell:
+      #   1. declared only  + json       -> the SCA report that would be classified
+      #   2. declared only  + cyclonedx  -> the output format that can carry an origin URL
+      #   3. everything     + json       -> what changes when installed packages are visible
+      # Scan 2 is SBOM-only, so it needs no vulnerability database.
+      # Exit codes are captured using PIPESTATUS.
+
+      # trivy_write_file is the filename prefix for everything Trivy writes (e.g. pip_A1a_..._trivy). 
+      # SKIP is the list of folders that Trivy should ignore: the directory holding installed packages (py_dependency) rather than declared ones.
+
+      # use trivy fs . to scan the whole directory, use vuln scanner
+      # use tee -a  to append the command output to the log file.
+      - name: Run Trivy (sub-RQ2 probe)
+        if: inputs.run_sca == 'on'
+        working-directory: services/java
+        continue-on-error: true
+        run: |
+          trivy_write_file="${{ inputs.cell_id }}_trivy"
+          SKIP="--skip-dirs target"
+
+          trivy --version | tee "${trivy_write_file}_version.txt"
+
+          set +e
+
+          echo "scan 1: declared only, json" | tee "${trivy_write_file}_log.txt"
+          trivy fs . $SKIP --scanners vuln --list-all-pkgs \
+            --format json --output "${trivy_write_file}_declared.json" \
+            2>&1 | tee -a "${trivy_write_file}_log.txt"
+          echo "scan 1 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
+
+          echo "scan 2: declared only, cyclonedx" | tee -a "${trivy_write_file}_log.txt"
+          trivy fs . $SKIP \
+            --format cyclonedx --output "${trivy_write_file}_declared.cdx.json" \
+            2>&1 | tee -a "${trivy_write_file}_log.txt"
+          echo "scan 2 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
+
+          echo "scan 3: everything, json" | tee -a "${trivy_write_file}_log.txt"
+          trivy fs . --scanners vuln --list-all-pkgs \
+            --format json --output "${trivy_write_file}_all.json" \
+            2>&1 | tee -a "${trivy_write_file}_log.txt"
+          echo "scan 3 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
+
+          set -e
+          ls -l ${trivy_write_file}_* | tee -a "${trivy_write_file}_log.txt"
+
  
       # 6. Upload the resolution output (log + lockfile(s) + pom + invalid marker).
       #    The central automated pipeline will download and classify it, and write one row to results.csv.
@@ -244,4 +299,12 @@ jobs:
             services/java/${{ inputs.cell_id }}_pom.lockfile.xml
             services/java/${{ inputs.cell_id }}_rebuild-lockfile.json
             services/java/${{ inputs.cell_id }}_mvn_lockfile_log.txt
+
+
+            services/java/${{ inputs.cell_id }}_trivy_version.txt
+            services/java/${{ inputs.cell_id }}_trivy_log.txt
+            services/java/${{ inputs.cell_id }}_trivy_declared.json
+            services/java/${{ inputs.cell_id }}_trivy_declared.cdx.json
+            services/java/${{ inputs.cell_id }}_trivy_all.json
+
           if-no-files-found: warn

@@ -673,7 +673,8 @@ if __name__ == "__main__":
     owner = "shirley1997"
     repo = "MS_test_system"
     repo_url = "https://github.com/shirley1997/MS_test_system"
-    image_tag = "thesis-runner:2.335.1"
+    image_tag = "thesis-runner:2.338.0"   
+    # stand 10.10.2026: the previous used runner version v2.335.1 is deprecated, now use the new version 2.338.0
     checkpoint_path = Path("automation_process/central_automated_pipeline/checkpoint.json")
     result_file_path = Path("automation_process/central_automated_pipeline/results.csv")
 
