@@ -5619,3 +5619,285 @@ run.
       replacing the "TBD - needs technical evaluation" text with the measured result.
 - [ ] Then the same probe round for **super-confused** and **DepGate** (their columns 11 and 13 are
       still TBD too), and fix the input mode per tool before the measurement run.
+
+# 11.10.2026 - sub-RQ2: baked the other two SCA tools into the runner image, integrate DepGate into CI pipelines
+
+**Stand:** super-confused 1.2.0 and DepGate 0.10.0 are now installed in the SCA runner image
+together with Trivy 0.75.0, the image is rebuilt and the persistent runner container recreated. Read
+DepGate's full documentation and its own CLI source to decide which commands actually fit this
+application, and commit + pushed the Trivy + DepGate steps to all three service CI pipelines. The
+super-confused pipeline step is **not written yet** (planned for 12.10). The most important result
+of the day is not about a tool at all: I checked whether the SCA tools should be allowed to look at
+the *installed* directories, and found from my own C1b (package update) evidence that doing so would produce a
+false negative.
+
+## 1. super-confused: where the version number actually comes from
+
+- The GitHub repo `6mile/super-confused` has **no releases and no tags**, so there is nothing to pin
+  there. The pinnable version comes from the **npm registry** (super-confused is a npm package):
+
+  https://www.npmjs.com/package/super-confused -> `latest = 1.2.0`, published versions `1.0.0`, `1.1.0`, `1.2.0`. 
+
+
+
+### change the Dockerfile to install super-confused into image
+
+```dockerfile
+ARG SUPER_CONFUSED_VERSION=1.2.0
+RUN npm install -g "super-confused@${SUPER_CONFUSED_VERSION}" \
+    && npm cache clean --force
+```
+
+- **Why `-g`.** The npm page shows only `npm install super-confused`, which installs *locally* into
+  `./node_modules` of whatever directory you happen to be in. In an image there is no project
+  directory and the binary would not be on `PATH`. `-g` puts it at `/usr/bin/super-confused`.
+
+- **Why the cache clean.** Keeps root's build-time npm cache out of the image.
+- Installed **before `USER runner`**, because a global npm install writes to `/usr`.
+
+## 2. DepGate: installed in its own virtual environment to keep experiment environment clean and stable
+
+- Version **0.10.0** from PyPI, requires Python >= 3.10.
+
+
+### Dockerfile block
+
+```dockerfile
+ARG DEPGATE_VERSION=0.10.0
+RUN /opt/python/${PYTHON_VERSION}/bin/python3.12 -m venv /opt/depgate \
+    && /opt/depgate/bin/pip install --no-cache-dir "depgate==${DEPGATE_VERSION}" \
+    && ln -s /opt/depgate/bin/depgate /usr/local/bin/depgate
+```
+
+- **Why a separate venv and not just `pip install depgate`.** Those 11 dependencies of DepGate would land
+  in the experiment's own Python 3.12.4 `site-packages` - the environment that is itself under
+  measurement. **The tool should not alter the environment it measures.** The venv is built from the
+  pinned CPython 3.12.4, so no second interpreter enters the image.
+
+- **Why pip inside the venv is not upgraded.** Same reproducibility reason noted on 28.06.2026 for
+  the service venv.
+
+
+## 3. Commands used
+
+```powershell
+# rebuild (from inside infrastructure/runner_sca; the trailing "." is the build context)
+docker build -t sca-thesis-runner:2.338.0 .
+
+# replace the container; registration token taken from the GitHub UI 
+
+docker run -d --name sca-thesis-runner `
+  -e GH_REPO_URL=https://github.com/shirley1997/MS_test_system `
+  -e GH_TOKEN=<token> `
+  -e RUNNER_NAME=sca-thesis-runner `
+  -e RUNNER_LABELS=thesis-runner `
+  sca-thesis-runner:2.338.0
+```
+
+
+## 4. What DepGate reads, and what it outputs
+
+Read: README, `docs/supported-package-managers.md`, `docs/analysis-levels.md`,
+`docs/output-formats.md`, `docs/configuration.md`, `docs/version-resolution.md`
+
+### Input per service
+
+`-t` names **one** ecosystem per run, so one run per service. Non-recursive by default, which is
+what I want: it looks only in the directory given and does not check into `py_dependency/`,
+`node_modules/` or `target/`.
+
+| Service | `-t` | What it reads | Which C1 cells it works in |
+|---|---|---|---|
+| `services/python` | `pypi` | `pyproject.toml` (preferred over `requirements.txt`); no `uv.lock` / `poetry.lock` here, so it falls back to the manifest -> direct dependencies only | **all of them** |
+| `services/nodejs` | `npm` | `package-lock.json` when present (direct + transitive), otherwise `package.json` | all |
+| `services/java` | `maven` | `pom.xml`, `<dependencies>` only, direct only (DepGate has no Maven lockfile support) | all |
+
+- **That Python row matters: DepGate covers the cells where Trivy is blind.** Trivy needs
+  `pylock.*.toml` and therefore only sees Python C1c cells (finding from 10.10); DepGate reads
+  `pyproject.toml` and therefore works in C1a, C1b and C1c.
+- flag: `-l` (list file), `-d` (directory) and `-p` (single package) are **mutually
+  exclusive and exactly one is required**.
+
+### Output field names - CSV and JSON differ
+
+[`docs/output-formats.md`](https://github.com/cognitivegears/depgate/blob/main/docs/output-formats.md) documents both. The names are **not** the same, which matters because the
+pipeline parses JSON:
+
+| CSV column | JSON field |
+|---|---|
+| `Exists on External` (col 3) | `exists` |
+| `Risk: Missing` (col 8) | `risk.isMissing` |
+| `Version Count` (col 6) | `versionCount` |
+| `Risk: Min Versions` (col 10) | `risk.minVersions` |
+| `Risk: Too New` (col 11) | `risk.isNew` |
+| `Risk: Any Risks` (col 15) | `risk.hasRisk` |
+
+**Use the JSON names in the write-up.** Also noted: `requested_spec` and `resolved_version` appear
+as CSV columns 16-17 but are **not** in the documented JSON "Core Fields" list, although they do
+appear in `src/cli_io.py`, which serves both exporters. The pilot will show whether they are in the
+JSON.
+
+### Exit codes (column 13, measured by design)
+
+From `src/constants.py`: `0` success, `1` file error, `2` connection error, **`3` warnings present**.
+Without `--error-on-warnings` DepGate exits `0` even when it flags risks.
+
+### Default thresholds
+
+From `docs/configuration.md`: `min_versions: 2`, `min_release_age_days: 2`, `score_threshold: 0.6`.
+
+## 5. Which commands I chose to use
+
+```bash
+depgate scan -t pypi -d . -a compare \
+  -o "${depgate_write_file}_compare.json" --loglevel DEBUG
+depgate scan -t pypi -d . -a heur --error-on-warnings \
+  -o "${depgate_write_file}_heur.json" --loglevel DEBUG
+```
+
+(`-t maven` for Java; `-t npm` for Node plus a third run with `--direct-only`.)
+
+- **Two analysis levels, run separately.** `compare` only asks "does this name exist publicly, and
+  how many versions does it have". The risk flags are documented under *"Risk Fields (heuristics
+  analysis)"*, so `compare` alone does not produce them. Running both shows what a plain presence
+  check reports versus what the risk engine adds.
+- **`--loglevel DEBUG` for the pilot phase.** The console log is where DepGate states *which manifest it
+  picked*. 
+- **`--error-on-warnings` on the heuristics run.** This makes column 13 a **measured** value instead
+  of a documented claim, and exit `3` is itself a cheap machine-readable "this tool flagged
+  something" signal. `continue-on-error: true` on the step means it still cannot fail a cell.
+- **`--direct-only`, is an option in npm only.** It forces direct dependencies from `package.json` even when a lock
+  file exists. The question it answers: does DepGate see the **resolved 1.0.3** from
+  `package-lock.json`, or only the **B2 range** from `package.json`? The docs state the flag has no
+  effect for Maven, and the Python side has no lock file DepGate understands, so it is pointless
+  there.
+
+
+
+### What deps.dev is, and why it is noted
+
+- **deps.dev** is Google's *Open Source Insights* service (`api.deps.dev`): a public database of
+  package metadata - versions, licences, dependency graphs, OpenSSF Scorecard results, advisories.
+  DepGate queries it to enrich each package before scoring.
+- It is **not in the README**; it appears only in `docs/configuration.md` (the `DEPGATE_DEPSDEV_*`
+  environment variables) and in the CLI flags (`--depsdev-disable`, `--depsdev-base-url`,
+  `--depsdev-cache-ttl`, `--depsdev-max-concurrency`). **It is enabled by default.**
+- Two consequences: my attacker packages are brand new, so their deps.dev fields will probably come
+  back empty (absence, not error); and it is a **third-party service whose data changes over time**,
+  so it is a reproducibility factor for the measurement run. `--depsdev-disable` is the switch.
+  **Decision: leave it ON for the pilot** (the point of a pilot is to see full capability) and
+  record that it was enabled.
+- Related: the heuristics also query the GitHub API for repository signals, rate-limited to 60
+  requests/hour without a token. Fine for two packages per cell; worth knowing if repo fields ever
+  come back empty.
+
+## 6. Main findin today: letting a tool read the installed directories would create a false negative
+
+I questioned my own earlier rule ("scan declared dependencies, skip installed directories"), because
+sub-RQ1 is about the **resolution result** and in some cells packages genuinely are installed. So I
+checked the actual evidence of `pip_A1a_B1a_B2b_C1b` instead of arguing about it.
+
+| | what is actually there | version |
+|---|---|---|
+| `py_dependency/` on disk | written by **phase 1**, which installs `fixed_setup_file/fixed_pyproject.toml` with `xueting-thesis-event-fengfu==1.0.0` **pinned** | **1.0.0** |
+| the cell's measured outcome in `results.csv` | **phase 2**, `pip install --dry-run --upgrade`, resolved with the cell's own config | **1.0.3** |
+
+The setup log proves it: `Successfully installed ... xueting-thesis-event-fengfu-1.0.0`. Phase 2 is a
+dry run, so it never touches the disk.
+
+- **So a tool pointed at `py_dependency/` would report 1.0.0 - clean - in a cell classified
+  `malicious_resolved`.** That is not "a different measurement", it is the **wrong** one, and it
+  would manufacture a false negative by construction.
+- The other two ecosystems make it moot anyway: every npm command uses `--package-lock-only` or
+  `npm ci --dry-run`, so `node_modules/` is **never populated**; and Java's `target/` holds the
+  service's own jar, while the resolved dependency jars live in `~/.m2/repository`, outside the
+  service directory entirely.
+- **Where the resolution result actually lives** is the resolution *record*, not the installed tree:
+  `install-report.json`, `package-lock.json`, `pylock.<cell>.toml`, `lockfile.json`. So the real
+  axis is not "declared vs installed" but **"resolution record vs installed tree"**, and the record
+  is what lines up with sub-RQ1.
+- **Cross-ecosystem consequence:** the tools only ever get a resolution record in **Python
+  C1c** (`pylock.*.toml`, which Trivy reads) and **npm with a lock file** (`package-lock.json`).
+  Java's `pom.xml` is declared-only, and no tool reads third party plugin maven-lockfile's `lockfile.json`.
+- **Keep Trivy's scan 3 anyway.** In `pip_A1a_B1a_B2b_C1b`, scan 1 will find nothing (no lock file)
+  while scan 3 will report **1.0.0** out of `py_dependency/*.dist-info/METADATA`. That is this whole
+  argument demonstrated with evidence instead of asserted - much stronger in the thesis. Run that
+  cell deliberately.
+- **Note on the earlier rejection.** The 08.10 entry (section 6) rejected pointing Syft at installed
+  metadata. That was an **HR3** argument - a tool must not be allowed to pass "reads this project's
+  manifests" by being pointed at installed metadata instead. It still stands, and it is a *different*
+  point from this one.
+
+## 7. DepGate does read the manifests
+
+[Supported Package Managers](https://github.com/cognitivegears/depgate/blob/main/docs/supported-package-managers.md)
+- **It DOES read the cell's manifest:** `pyproject.toml` / `requirements.txt`, `package.json` +
+  `package-lock.json`, `pom.xml`. Those files carry variable **B2**, the version specifier, and
+  `requested_spec` is exactly that value.
+- **It does NOT read the registry configuration:** `.npmrc`, `pip.conf`, and the pom's
+  `<repositories>` are never consulted. Those are variables **A** and **B1**.
+- Also a correction to myself: the registry endpoints are **not hard-coded**.
+  `docs/configuration.md` documents `registry.pypi_base_url`, `registry.npm_base_url`,
+  `registry.maven_search_url` in a `depgate.yml`, overridable by env vars and CLI.
+- **But they must stay pointed at the public registry.** The DC check works by asking "is this name
+  absent from the *public* registry, i.e. claimable by an attacker". -> use default settings
+
+**So the real limitation is not configurability.** It is that DepGate checks **one registry at a
+time** and has no concept of two registries with a resolution order between them - which is exactly
+variables **A** and **B1**, the two that sub-RQ1 showed decide the outcome. It reads B2 and is
+structurally blind to A and B1.
+
+- **This is testable, not just arguable:** compare DepGate's `resolved_version` against
+  `results.csv`'s `pk1_version` across cells with different `A` values. Where they agree it is
+  coincidence (the cell resolved from public anyway); 
+
+## 8. Finding or tool characteristic? And no, the application is not changed
+
+- It is a **characteristic** of the tool. It becomes a **finding** only when measured against my
+  research question. The difference matters for how it is written:
+  - Do **not** present "DepGate checks only one registry" as a discovery - it is in its own
+    documentation and a reviewer who reads the docs will say so.
+  - **Do** present it as: *because* DepGate checks one registry and has no resolution-order concept,
+    it cannot distinguish an `A1a` cell from an `A3` cell, **and here is the measured consequence**.
+    The characteristic is the premise; my evidence is the finding.
+- **The test application is not modified to fit any tool.** Two reasons:
+  1. My own screening rule says so, and that rule is what makes the failures of Syft, OpenSCA and
+     Dependency-Check legitimate findings rather than setup mistakes. Breaking it for DepGate would
+     retroactively undermine those.
+  2. Sub-RQ2's whole value is that it scans **the same application in the same cells** that produced
+     sub-RQ1's results. Change the application and the two halves no longer refer to the same object.
+- Short version: **if a tool cannot see something, that is data about the tool.**
+
+
+
+## 11. Still to write: the super-confused pipeline step
+
+Planned for 12.10. Design already fixed:
+
+- It writes JSON to **stdout** and has no `-o` flag, so stdout is redirected to the output file and
+  stderr appended to the log. No pipe on the tool call, so plain `$?` is the correct exit code here.
+- Targets named explicitly per ecosystem: `pyproject.toml` / `pom.xml`, and for npm **both**
+  `package.json` and `package-lock.json`, with a `[ -f package-lock.json ]` guard because that file
+  is deliberately removed on the C1b and C1c failure paths.
+
+
+## Next steps
+
+- [ ] Fix `-a heuri` -> `-a heur` in all three workflows, rename `_heuri.json` -> `_heur.json`
+      (step + upload list), and add the missing DepGate entries to the nodejs upload list.
+- [ ] Write the super-confused step in all three workflows, including the positive control.
+- [ ] Then run the pilot cells with `run_sca = on`:
+      - `pip_A1a_B1a_B2b_C1c` - all three tools on a known `malicious_resolved` cell
+      - `pip_A1a_B1a_B2a_C1a` - expect Trivy to find no input; DepGate should still read
+        `pyproject.toml`
+      - `pip_A1a_B1a_B2b_C1b` - the declared-vs-installed demonstration (Trivy scan 3 should report
+        **1.0.0** from `py_dependency/` while the cell's real outcome is 1.0.3)
+      - `npm_A1a_B1a_B2b_C1c` - the real test of column 11, and of DepGate's lock file vs manifest
+        input mode
+      - `mvn_A1a_B1a_B2b_C1c`
+- [ ] Per cell, record for each tool: did it run, did it name `1.0.3`, is any origin URL present,
+      what exit code, and did the positive control fire.
+- [ ] Compare DepGate's `resolved_version` against `results.csv`'s `pk1_version` across different
+      `A` values, to show the A/B1 blindness empirically.
+- [ ] Fill columns 11 and 13 in `theoretical_evaluation_tables.md` for all three tools.
+

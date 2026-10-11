@@ -296,7 +296,7 @@ jobs:
           echo "depgate scan 1 exit code: ${PIPESTATUS[0]}" | tee -a "${depgate_write_file}_log.txt"
 
           echo "depgate scan 2: analysis level - heuristics" | tee -a "${depgate_write_file}_log.txt"
-          depgate scan -t pypi -d . -a heuri --error-on-warnings \
+          depgate scan -t pypi -d . -a heur --error-on-warnings \
             -o "${depgate_write_file}_heuri.json" --loglevel DEBUG \
             2>&1 | tee -a "${depgate_write_file}_log.txt"
           echo "depgate scan 2 exit code: ${PIPESTATUS[0]}" | tee -a "${depgate_write_file}_log.txt"
