@@ -193,6 +193,17 @@ WORKDIR /home/runner
 RUN mkdir -p /home/runner/.m2
 COPY --chown=runner:runner settings.xml /home/runner/.m2/settings.xml
 
+# bake the Trivy vuln database into the image, to increase the scan speed per cell
+# and fix the vuln database version for reproducibility
+
+# This runs as the "runner" user, so the cache goes to /home/runner/.cache/trivy.
+# TRIVY_CACHE_DIR is set explicitly
+ENV TRIVY_CACHE_DIR=/home/runner/.cache/trivy
+
+RUN trivy image --download-db-only --no-progress \
+    && trivy image --download-java-db-only --no-progress \
+    && trivy version --format json
+
 
 # stand 10.10.2026: the previous used runner version v2.335.1 is deprecated! 
 # now change the version to 2.338.0

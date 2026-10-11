@@ -5319,3 +5319,300 @@ file (plan "GitHub link" â†’ "Repository", plan "License / free & open-source" â
 - [ ] Section 5.4.1 of the thesis names Syft, OpenSCA and Dependency-Check - it must now also report
       that all three failed, which requirement each failed on, where the replacement came from, and
       that the replacement claims no DC detection.
+
+# 10.10.2026 - sub-RQ2 technical evaluation: Trivy probe round (first tool, first cell)
+
+**Stand:** built a second, separate self-hosted runner image with Trivy baked in, added a
+switchable step (for using SCA tool or not) to all three service CI pipelines, and ran the first probe cell
+(`pip_A1a_B1a_B2b_C1c`, a cell that sub-RQ1 classified `malicious_resolved`). Trivy installs, runs
+and produces parseable output inside the pipeline, it can be integrated to the CI pipeline / github workflow. It lists
+the attacker version `1.0.3` as an ordinary direct dependency and reports **nothing** about
+dependency confusion. The decisive table column 11 (resolved package origin URL in the output) is
+now answered: **no, in neither output format** 
+
+## 1. technical evaluation
+
+- The 08.10 entry closed the *selection* of the three tools (super-confused, DepGate, Trivy) but
+  left three things open that documentation cannot answer:
+  - **HR1** - does the tool actually install and run inside the per-service CI pipeline?
+  - **Column 11** - does its output carry the *resolved package origin URL*? This is the decisive
+    column: with no origin field, a same-name-higher-version substitution is structurally invisible.
+  - **Column 13** - does it break the build (exit code) when it finds something?
+- Decision: start with **Trivy**, one cell, one ecosystem, and look at the raw output before
+  building any classifier logic on top of it.
+
+## 2. Infrastructure: a second runner, without touching the sub-RQ1 runner
+
+- Copied `infrastructure/runner/` -> **`infrastructure/runner_sca/`** (`Dockerfile`,
+  `entrypoint.sh`, `settings.xml`). Filenames kept identical on purpose.
+- **Two changes** in the copy:
+  1. Trivy **0.75.0** installed from the official release tarball, SHA-256 verified
+     (`c6e65abd...16b3f3f`), into `/usr/local/bin/trivy` so it is on `PATH` for every user.
+     
+  2. **`--ephemeral` removed** from `config.sh` in `entrypoint.sh` -> this runner stays registered
+     and takes job after job. Reason: for a probe round I want to dispatch cells by hand, and a
+     persistent container keeps Trivy's downloaded database between jobs instead of re-downloading
+     it per cell.
+- The runner **label is still `thesis-runner`**, because all three workflows say
+  `runs-on: [self-hosted, thesis-runner]`. 
+- `infrastructure/runner/` and `central_automated_pipeline.py` are left untouched.
+
+## 3. Problem found on the way: the pinned runner version expired
+
+- First start of the new container log:
+  `An error occurred: Runner version v2.335.1 is deprecated and cannot receive messages.`
+- Cause: `--disableupdate` in `entrypoint.sh` (decided 08.08.2026) stops the runner from
+  self-updating, and **GitHub enforces a 30-day update window**. 
+- Fix: bumped **both** ARGs together to the current release:
+  - `RUNNER_VERSION=2.338.0`
+  - `RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32`
+  . 
+- ** reporting as a limitation:** every component of this experiment can be pinned
+  permanently *except* the GitHub Actions runner binary, because GitHub forces an upgrade every 30
+  days. The three main experiment runs (25.08, 28.08, 08.09) all ran on 2.335.1, so **the sub-RQ1
+  data is unaffected** - but a re-run today necessarily uses a different runner version than the
+  one recorded. This is outside my control and should be stated rather than left for a reader to
+  spot as an inconsistency between the Dockerfile and the log.
+
+## 4. Commands used
+
+Build the SCA runner image (from inside `infrastructure/runner_sca/`; the trailing `.` is the build
+context):
+
+```powershell
+docker build -t sca-thesis-runner:2.338.0 .
+```
+
+Start it. Registration token taken by hand from GitHub UI. No `--rm` used, so the container will not delete itself automatically after stop.
+
+```powershell
+docker run -d --name sca-probe-runner ^
+  -e GH_REPO_URL=https://github.com/shirley1997/MS_test_system ^
+  -e GH_TOKEN=<token from GitHub UI> ^
+  -e RUNNER_NAME=sca-thesis-runner ^
+  -e RUNNER_LABELS=thesis-runner ^
+  sca-thesis-runner:2.338.0
+```
+
+(in PowerShell the line-continuation character is the backtick, not `^`)
+
+
+container log shows "Connected to GitHub" followed by "Listening for Jobs".
+
+Download the artifact of the finished cell (through github actions workflow log)
+
+
+
+## 5. Pipeline change: one new switch, one new step
+
+- Added a **new input** to all three service workflows:
+
+```yaml
+      run_sca:
+        description: "sub-RQ2 probe: also run the SCA tool scan after dependency resolution"
+        required: false
+        type: choice
+        default: "off"
+        options: ["off", "on"]
+```
+
+- **Why `type: choice` with "off"/"on" and not `type: boolean`:** a `workflow_dispatch` boolean
+  input arrives as the *string* "false" when dispatched through the API/CLI, and a non-empty
+  string is truthy in a GitHub `if:` expression - so `if: inputs.run_sca` would fire even when the
+  switch is off. A two-value choice compared with `== 'on'` cannot go wrong either way.
+  The quotes around off/on are also necessary: unquoted, YAML turns them into `false`/`true`.
+
+- The new step sits **after the C1a/C1b/C1c steps and before the artifact upload**, guarded by
+  `if: inputs.run_sca == 'on'` and `continue-on-error: true`. Three scans per cell:
+  1. **declared only, JSON** - the SCA report that would be classified
+  2. **declared only, CycloneDX** - the only output format that could carry an package origin URL
+  3. **everything, JSON** - same as scan 1 but without `--skip-dirs`, i.e. installed packages in directory are visible
+- `--skip-dirs` per ecosystem: `py_dependency .venv build` / `node_modules` / `target`.
+  Reason: the screening plan (08.10, section 6) explicitly rejected "read what is *installed*" as a
+  different measurement. Scan 3 exists so that difference can be shown with evidence instead of
+  argued.
+- Exit codes are captured with `${PIPESTATUS[0]}`, not `$?`, because the command is piped into
+  `tee` and `$?` would return *tee's* status. 
+- The Trivy output files added to each `upload-artifact` path list.
+
+## 6. The probe cell and its output
+
+Dispatched by hand from the GitHub UI: **`pip_A1a_B1a_B2b_C1c`** (A1a / B1a / B2b / C1c,
+`run_sca = on`), run on 2026-10-10 18:44-18:45. Chosen because sub-RQ1 classified this exact cell
+`malicious_resolved`, so the attacker version really is in the files Trivy reads.
+
+What came out:
+
+- **Target:** `pylock.pip_A1a_B1a_B2b_C1c.toml` -> Trivy matched the **PEP 751 named lock file**.
+  The documented footnote *"Also `pylock.<identifier>.toml` per PEP 751"* holds against a filename I
+  generate myself, not only against the documented example. This was the single fact that chose
+  Trivy over OSV-Scanner on 08.10, and it is now verified behaviour rather than a documentation
+  claim.
+- **9 packages**, with the attacker version present, but no warning is shown:
+  - direct: `flask@3.1.1`, **`xueting-thesis-event-fengfu@1.0.3`**,
+    **`xueting-thesis-service-zhuanfa@1.0.3`**
+  - indirect: `blinker`, `click`, `itsdangerous`, `jinja2`, `markupsafe`, `werkzeug`
+- **Exactly one vulnerability is in the output:** `CVE-2026-27205` in `flask@3.1.1`, severity LOW, fixed in 3.1.3 -
+  a real, unrelated CVE in a public third-party dependency.
+- **Zero findings about the two substituted packages. The words "dependency confusion" appear
+  nowhere in the output.**
+- **Exit code 0 on all three scans**, even with that LOW finding present -> column 13 answered:
+  Trivy does **not** break the build by default; the documented `--exit-code` flag is what changes
+  that. Measured, not claimed.
+- **Scan 3 added nothing** - `_all.json` and `_declared.json` are identical in content (both 6544
+  bytes, same 9 packages, same 1 CVE). Reason: C1c uses `pip install --dry-run`, so
+  `py_dependency/` is never created and there are no installed packages to find. The
+  declared-vs-installed comparison can only produce a difference in **C1b** cells.
+- The vulnerability database download was **121.03 MiB and took 54 seconds**.
+
+## 7. Main finding
+
+The resolved origin URL was **physically present in the scanned directory, in two separate files**,
+and none of it shows in the trivy output:
+
+| File in the scanned directory | What it contained | What Trivy did |
+|---|---|---|
+| `pylock.pip_A1a_B1a_B2b_C1c.toml` | `url = "http://host.docker.internal:8081/repository/pypi-group-public-first/packages/..."` per wheel | read the file, **discarded the `url` field** |
+| `pip_A1a_B1a_B2b_C1c_install-report.json` | pip's own `download_info.url` per package | **never read at all** |
+
+- **JSON output** gives each package only `ID`, `Name`, `Identifier` (PURL + UID), `Version`,
+  `Relationship`, `AnalyzedBy`. No URL field of any kind.
+- **CycloneDX output** gives `purl`, `bom-ref` and two Trivy properties.
+- Verified in the source code why this is not a flag I could flip:
+  - `pkg/dependency/parser/python/pylock/parse.go` declares a struct with only `name`, `version`,
+    `dependencies` and `directory.path`. The `[[packages.wheels]]` table, where the URL lives, is
+    **never decoded**. The field is dropped at parse time.
+  - `pkg/fanal/types/package.go` tags `ExternalReferences []ExternalRef` with `json:"-"`, so even
+    where Trivy *does* keep a URL (the npm parser keeps `resolved`), it cannot appear in
+    `--format json`.
+- **The part that is stronger than an omission:** the PURL is
+  `pkg:pypi/xueting-thesis-event-fengfu@1.0.3`. PURL has a `repository_url` qualifier for exactly
+  this case and Trivy emits none. So the output does not leave the origin blank - **it asserts a
+  public-PyPI origin, which for this cell is factually wrong**: the package came from my Nexus
+  group repository. An output model like that cannot *represent* the distinction sub-RQ2 is about.
+
+
+## 8. Second finding: there are no vulnerabilities for my own packages
+
+- Trivy reports only what a vulnerability database already records: it takes name + version and
+  looks them up in GHSA/NVD. `blinker`, `click`, `jinja2` etc. simply have no advisory at those
+  versions.
+- `xueting-thesis-event-fengfu` and `xueting-thesis-service-zhuanfa` do **not exist in any advisory
+  database at all** - nobody has ever reported them, including the `1.0.3` I published as the
+  attacker. So there is nothing to match against.
+- This is the **Family 1 vs Family 2 definition argument** (section 11.4) showing up as data: a
+  database-bound scanner can only see facts about *published package versions*. "This internal name
+  is claimable on a public registry" is not such a fact, so **no database could record it**. The
+  flask CVE is the only thing in the whole report that a vulnerability database could contribute,
+  and it is irrelevant to dependency confusion.
+
+## 9. Third finding: for Python, Trivy only has input in C1c cells
+
+- Checked in the source code, not only in the docs table. The analyzers under
+  `pkg/fanal/analyzer/language/python/` are six files: `packaging`, `pip` (requirements.txt),
+  `pipenv`, `poetry`, `pylock`, `uv`. **There is no stand-alone `pyproject.toml` analyzer.**
+- `pylockAnalyzer.Required()` *does* return true for `pyproject.toml`, so Trivy collects the file.
+  But `PostAnalyze()` loops over **lock files only**, and `pyproject.toml` is used solely inside
+  `mergePyProject()`, which is called once per lock file found, to relabel packages `Direct` /
+  `Indirect`. if there is no lock file -> the loop body never runs -> `pyproject.toml` is collected and then
+  never parsed into any result. The `poetry` and `uv` analyzers have exactly the same structure.
+- So in this cell Trivy **did** read `pyproject.toml` - that is where `"Relationship": "direct"`
+  came from - but **only because the lock file was next to it**. The log line
+  `Number of language-specific files num=1` and the single `Target` are that showing in my own
+  output.
+- Consequence: C1a and C1b Python cells give Trivy **no parseable file at all**. Still to be
+  confirmed empirically by running `pip_A1a_B1a_B2a_C1a` and checking that `Results` comes back
+  empty.
+- This is the first case where **a tool passed the Stage 3 documentation filter and turned out
+  narrower in practice** - exactly the limitation written into the screening plan (section 11.1:
+  "both the Stage 1 ecosystem check and the Stage 3 filter are provisional"). HR3 itself still
+  passes on its own stated rule ("one readable manifest per ecosystem is enough"), because the lock
+  file *is* readable; the narrowing is about which **cells** can be measured, not about the tool
+  failing a requirement.
+
+## 10. Decision: "no parseable input" still counts as "did not detect"
+
+- First idea was a three-way outcome (detected / not detected / no input) with **recall computed
+  only over cells where Trivy had input**. **Rejected.** That excludes the cells the tool handles
+  worst and then reports success over what is left - the same circularity I removed from section
+  5.4.1 on 29.08 (selecting for success, then measuring success). It would inflate recall.
+- **Rule fixed instead:** the denominator is **every `malicious_resolved` cell**. A cell where the
+  tool was run, the attack had succeeded, and no alert came out is a **miss**, whatever the reason.
+- The *reason* is recorded in a **separate column next to the outcome**, not as a different
+  outcome, because the two failure modes are architecturally different and the mechanism argument
+  needs them apart:
+
+| cell | detected | reason |
+|---|---|---|
+| `pip_A1a_B1a_B2b_C1c` | no | parsed 9 packages incl. `1.0.3`; no origin field anywhere in the output |
+| `pip_A1a_B1a_B2a_C1a` (expected) | no | no parseable input file present in this cell |
+
+
+## 11. Two fixes applied before running the remaining cells
+
+1. **`--no-progress`** added to every `trivy fs` call. The database download progress bar had
+   written progress lines into `_trivy_log.txt`, burying the three lines that
+   actually matter.
+2. **Both databases baked into the image** at build time, after `USER runner` so the cache lands in
+   `/home/runner/.cache/trivy` where the workflow looks for it:
+
+```dockerfile
+ENV TRIVY_CACHE_DIR=/home/runner/.cache/trivy
+
+RUN trivy image --download-db-only --no-progress \
+    && trivy image --download-java-db-only --no-progress \
+    && trivy version --format json
+```
+
+   plus `--skip-db-update` on every scan (and `--skip-java-db-update` as well in the Java
+   workflow), so no cell ever reaches the network for a database.
+   - **Two reasons** 1. Speed: 121 MiB and ~1 minute per cell
+     would otherwise be paid in every fresh container of the measurement run. 2. **Reproducibility:**
+     the database version becomes part of the image and is pinned like every other component -
+     without this, which CVEs a scan reports depends on whatever the database held that day.
+   - The Java index database is pinned too, because Java scan 3 (the one that may see the JARs
+     under `target/`) needs it to identify them; without it that scan would be identical to scan 1
+     and the comparison would be empty.
+1. `trivy --version` replaced by **`trivy version --format json`** (file renamed
+   `_trivy_version.json`). The plain form records only the binary version; the JSON form also
+   records the **database version and when it was built**, so each cell's artifact carries the full
+   provenance of what produced its result.
+- Checked what is in the cache directory: only the two databases. For `trivy fs` the scan cache
+  defaults to memory, so **no scan results are cached on disk** 
+  The database affects only which CVEs appear.
+
+## 12. the six hard requirements for Trivy
+
+| | Status after this probe |
+|---|---|
+| **HR1** integrates and runs in the CI pipeline | **PASS, measured** - for Python. npm and Maven still to run |
+| **HR2** all three ecosystems | documentation-level pass; Python now verified by a real run |
+| **HR3** reads this project's real files | **PASS** on its own rule - `pylock.<cell_id>.toml` was read |
+| **HR4** machine-parseable output | **PASS, measured** - valid JSON and valid CycloneDX |
+| **HR5** free, no mandatory account | **PASS, measured**, no account or authentication needed |
+| **HR6** version can be pinned | **PASS** - 0.75.0 by tarball + SHA-256, and now the databases too |
+
+Trivy is usable for the main sub-RQ2 experiment. HR1 is complete once the npm and Maven cells have
+run.
+
+## important links
+- scan a filesystem using trivy: https://trivy.dev/docs/latest/target/filesystem/ -> command:  trivy fs /path/to/project
+
+## Next steps
+
+- [ ] `pip_A1a_B1a_B2a_C1a` - confirm Trivy finds **no input at all** in a Python C1a cell
+      (expect `num=0`, empty `Results`).
+- [ ] `pip_A1a_B1a_B2b_C1b` - the only Python case that can give scan 3 a real
+      declared-vs-installed difference, because `py_dependency/` is actually populated there.
+- [ ] `npm_A1a_B1a_B2b_C1c` - **the real test of column 11.** Trivy's npm parser *does* keep the
+      `resolved` tarball URL as an external reference, so the CycloneDX output may carry the Nexus
+      URL for npm. If it does, column 11 becomes a **per-ecosystem** answer instead of one yes/no,
+      and the mechanism argument sharpens: the blindness sits in the Python parser specifically,
+      not in Trivy's data model as a whole.
+- [ ] `mvn_A1a_B1a_B2b_C1c` - watch whether Trivy resolves `pom.xml` against my Nexus or against
+      Maven Central (it reads `<repositories>` from the pom and `<mirrors>` from `settings.xml`),
+      and whether the baked HTTP-blocker mirror interferes. `--offline-scan` is the knob if it does.
+- [ ] Fill columns 11 and 13 in `theoretical_evaluation_tables.md` for Trivy (lines 203 and 205),
+      replacing the "TBD - needs technical evaluation" text with the measured result.
+- [ ] Then the same probe round for **super-confused** and **DepGate** (their columns 11 and 13 are
+      still TBD too), and fix the input mode per tool before the measurement run.

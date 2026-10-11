@@ -250,24 +250,24 @@ jobs:
           trivy_write_file="${{ inputs.cell_id }}_trivy"
           SKIP="--skip-dirs py_dependency --skip-dirs .venv --skip-dirs build"
 
-          trivy --version | tee "${trivy_write_file}_version.txt"
+          trivy version --format json | tee "${trivy_write_file}_version.json"
 
           set +e
 
           echo "scan 1: declared only, json" | tee "${trivy_write_file}_log.txt"
-          trivy fs . $SKIP --scanners vuln --list-all-pkgs \
+          trivy fs . $SKIP --scanners vuln --list-all-pkgs --no-progress --skip-db-update \
             --format json --output "${trivy_write_file}_declared.json" \
             2>&1 | tee -a "${trivy_write_file}_log.txt"
           echo "scan 1 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
 
           echo "scan 2: declared only, cyclonedx" | tee -a "${trivy_write_file}_log.txt"
-          trivy fs . $SKIP \
+          trivy fs . $SKIP --no-progress --skip-db-update \
             --format cyclonedx --output "${trivy_write_file}_declared.cdx.json" \
             2>&1 | tee -a "${trivy_write_file}_log.txt"
           echo "scan 2 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
 
           echo "scan 3: everything, json" | tee -a "${trivy_write_file}_log.txt"
-          trivy fs . --scanners vuln --list-all-pkgs \
+          trivy fs . --scanners vuln --list-all-pkgs --no-progress --skip-db-update \
             --format json --output "${trivy_write_file}_all.json" \
             2>&1 | tee -a "${trivy_write_file}_log.txt"
           echo "scan 3 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
@@ -292,7 +292,7 @@ jobs:
             services/python/${{ inputs.cell_id }}_invalid.txt
 
 
-            services/python/${{ inputs.cell_id }}_trivy_version.txt
+            services/python/${{ inputs.cell_id }}_trivy_version.json
             services/python/${{ inputs.cell_id }}_trivy_log.txt
             services/python/${{ inputs.cell_id }}_trivy_declared.json
             services/python/${{ inputs.cell_id }}_trivy_declared.cdx.json
