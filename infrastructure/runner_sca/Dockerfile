@@ -1,5 +1,5 @@
 
-# this image is used for sub-RQ2, so the SCA tools are installed inside this image
+# this image is used for sub-RQ2, so the SCA tools are installed inside this image: Trivy, DepGate, super-confused
 # GitHub Actions self-hosted runner for dependency confusion experiments
 # Base image        : Ubuntu 24.04
 # Toolchains (pinned) : Node 24.18.0, npm 11.16.0, Python 3.12.4, pip 26.2.1,
@@ -145,7 +145,7 @@ ENV PATH="${JAVA_HOME}/bin:${PATH}"
 #    -> /opt/apache-maven-3.9.16/.
 # 3. Create a symlink doesn't contain version /opt/maven -> /opt/apache-maven-3.9.16
 # no need for hardcoded version
-#    so a change of version only changes the ARG.
+# so a change of version only changes the ARG.
 # 4. Delete the tarball at the end.
 
 ARG MAVEN_VERSION=3.9.16
@@ -177,6 +177,26 @@ RUN curl -fsSL -o /tmp/trivy.tar.gz \
     && rm -f /tmp/trivy.tar.gz \
     && trivy --version
 
+# install super-confused 1.2.0: a DC-specific SCA tool found on github.
+# it is a npm package with version 1.2.0, but the GitHub repo has no releases and no tags 
+# Published npm package versions are 1.0.0, 1.1.0, 1.2.0.
+
+# use npm install -g to install the binary in /usr/bin/super-confused.
+# npm cache cleaned afterwards so root's build-time cache does not stay in the image.
+ARG SUPER_CONFUSED_VERSION=1.2.0
+RUN npm install -g "super-confused@${SUPER_CONFUSED_VERSION}" \
+    && npm cache clean --force
+
+
+# install DepGate 0.10.0: the second DC-specific SCA tool.
+# important: the DepGate is installed into its OWN virtual environment at /opt/depgate, NOT into the experiment's
+# Python 3.12.4 site-packages. so that the experiment envrionment keep stable and untouched
+
+
+ARG DEPGATE_VERSION=0.10.0
+RUN /opt/python/${PYTHON_VERSION}/bin/python3.12 -m venv /opt/depgate \
+    && /opt/depgate/bin/pip install --no-cache-dir "depgate==${DEPGATE_VERSION}" \
+    && ln -s /opt/depgate/bin/depgate /usr/local/bin/depgate 
 
 
 # set up non-root user for the runner cause GHF runner rejects to to run as root -> create user called "runner"

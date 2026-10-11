@@ -284,6 +284,42 @@ jobs:
           set -e
           ls -l ${trivy_write_file}_* | tee -a "${trivy_write_file}_log.txt"
 
+          # the step of run DepGate scan
+      # with 2 analysis mode (the output will be compared): compare, heuristics
+      - name: Run DepGate (SCA Tool)
+        if: inputs.run_sca == 'on'
+        working-directory: services/nodejs
+        continue-on-error: true
+        run: |
+          depgate_write_file="${{ inputs.cell_id }}_depgate"
+          
+          /opt/depgate/bin/pip freeze | tee "${depgate_write_file}_versions.txt"
+
+          set +e
+
+          echo "depgate scan 1: analysis level - compare" | tee "${depgate_write_file}_log.txt"
+          depgate scan -t npm -d . -a compare \
+            -o "${depgate_write_file}_compare.json" --loglevel DEBUG \
+            2>&1 | tee -a "${depgate_write_file}_log.txt"
+          echo "depgate scan 1 exit code: ${PIPESTATUS[0]}" | tee -a "${depgate_write_file}_log.txt"
+
+          echo "depgate scan 2: analysis level - heuristics" | tee -a "${depgate_write_file}_log.txt"
+          depgate scan -t npm -d . -a heuri --error-on-warnings \
+            -o "${depgate_write_file}_heuri.json" --loglevel DEBUG \
+            2>&1 | tee -a "${depgate_write_file}_log.txt"
+          echo "depgate scan 2 exit code: ${PIPESTATUS[0]}" | tee -a "${depgate_write_file}_log.txt"
+
+
+          echo "depgate scan 3: heuristics, check direct dependencies only" | tee -a "${depgate_write_file}_log.txt"
+          depgate scan -t npm -d . -a heur --error-on-warnings --direct-only \
+            -o "${depgate_write_file}_heur_direct.json" --loglevel DEBUG \
+            2>&1 | tee -a "${depgate_write_file}_log.txt"
+          echo "depgate scan 3 exit code: ${PIPESTATUS[0]}" | tee -a "${depgate_write_file}_log.txt"
+
+          set -e
+          ls -l ${depgate_write_file}_* | tee -a "${depgate_write_file}_log.txt"
+
+
 
       # 7. Upload the resolution output (package-lock.json + command output) and evidence files as one artifact. 
       # The central automated pipeline will download and classify it, and write one row to results.csv.
