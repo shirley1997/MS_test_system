@@ -5597,6 +5597,9 @@ run.
 
 ## important links
 - scan a filesystem using trivy: https://trivy.dev/docs/latest/target/filesystem/ -> command:  trivy fs /path/to/project
+- adding a `trivy-action` step to your GitHub Actions workflow: https://medium.com/@vincenthartmann/how-to-add-a-security-scan-with-trivy-in-github-actions-8f16642aa82b
+- trivy github action: https://github.com/aquasecurity/trivy-action
+- trivy CI/CD integration: https://trivy.dev/docs/latest/ecosystem/cicd/  (trivy can integrate in github action / github workflow)  -> **trivy-action**
 
 ## Next steps
 
