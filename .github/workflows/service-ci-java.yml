@@ -248,7 +248,7 @@ jobs:
 
       # use trivy fs . to scan the whole directory, use vuln scanner
       # use tee -a  to append the command output to the log file.
-      - name: Run Trivy (sub-RQ2 probe)
+      - name: Run Trivy (SCA Tool)
         if: inputs.run_sca == 'on'
         working-directory: services/java
         continue-on-error: true
@@ -259,7 +259,6 @@ jobs:
           trivy version --format json | tee "${trivy_write_file}_version.json"
 
 
-          set +e
 
           echo "scan 1: declared only, json" | tee "${trivy_write_file}_log.txt"
           trivy fs . $SKIP --scanners vuln --list-all-pkgs --no-progress --skip-db-update --skip-java-db-update \
@@ -279,7 +278,7 @@ jobs:
             2>&1 | tee -a "${trivy_write_file}_log.txt"
           echo "scan 3 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
 
-          set -e
+         
           ls -l ${trivy_write_file}_* | tee -a "${trivy_write_file}_log.txt"
 
       # the step of run DepGate scan
@@ -293,7 +292,7 @@ jobs:
           
           /opt/depgate/bin/pip freeze | tee "${depgate_write_file}_versions.txt"
 
-          set +e
+         
 
           echo "depgate scan 1: analysis level - compare" | tee "${depgate_write_file}_log.txt"
           depgate scan -t maven -d . -a compare \
@@ -307,8 +306,52 @@ jobs:
             2>&1 | tee -a "${depgate_write_file}_log.txt"
           echo "depgate scan 2 exit code: ${PIPESTATUS[0]}" | tee -a "${depgate_write_file}_log.txt"
 
-          set -e
+        
           ls -l ${depgate_write_file}_* | tee -a "${depgate_write_file}_log.txt"
+
+    # give a file prefix for all files produced by super-confused: sc_write_file
+    # print the version of super-confused as evidence
+    # stdout = the JSON result -> goes into result file (and workflow log)
+    # stderr = error messages -> goes to log file (use 2>> , NOT 2>&1: because stdout is the data to be checked)
+    # we don't need to use "scan whole dirctory" command here ( ./super-confused.js .)
+    # because a directory scan find the same files as the command we use to scan specific files
+      - name: Run super-confused (SCA Tool)
+        if: inputs.run_sca == 'on'
+        working-directory: services/java
+        continue-on-error: true
+        run: |
+          sc_write_file="${{ inputs.cell_id }}_superconfused"
+
+          npm ls -g --depth=0 super-confused | tee "${sc_write_file}_version.txt"
+
+
+          echo "scan 1: pom.xml" | tee "${sc_write_file}_log.txt"
+          super-confused --json pom.xml \
+            2>> "${sc_write_file}_log.txt" | tee "${sc_write_file}.json"
+          echo "scan 1 exit code: ${PIPESTATUS[0]}" | tee -a "${sc_write_file}_log.txt"
+
+          # positive control: a package name which does not exist on public registry.
+          # proves the tool actually ran
+          mkdir -p /tmp/sc_control
+          cat > /tmp/sc_control/pom.xml <<'EOF'
+          <project>
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>io.github.shirley1997.control</groupId>
+            <artifactId>control</artifactId>
+            <version>1.0.0</version>
+            <dependencies>
+              <dependency>
+                <groupId>io.github.shirley1997.notpublished</groupId>
+                <artifactId>xueting-thesis-not-published</artifactId>
+                <version>1.0.0</version>
+              </dependency>
+            </dependencies>
+          </project>
+          EOF
+
+          echo "positive control exit code: ${PIPESTATUS[0]}" | tee -a "${sc_write_file}_log.txt"
+
+          ls -l ${sc_write_file}* | tee -a "${sc_write_file}_log.txt"
 
 
       # 6. Upload the resolution output (log + lockfile(s) + pom + invalid marker).
@@ -340,5 +383,10 @@ jobs:
             services/java/${{ inputs.cell_id }}_depgate_log.txt
             services/java/${{ inputs.cell_id }}_depgate_compare.json
             services/java/${{ inputs.cell_id }}_depgate_heuri.json
+
+            services/java/${{ inputs.cell_id }}_superconfused_version.txt
+            services/java/${{ inputs.cell_id }}_superconfused_log.txt
+            services/java/${{ inputs.cell_id }}_superconfused.json
+            services/java/${{ inputs.cell_id }}_superconfused_positive_control.json
 
           if-no-files-found: warn

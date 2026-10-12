@@ -5881,6 +5881,7 @@ Planned for 12.10. Design already fixed:
   is deliberately removed on the C1b and C1c failure paths.
 
 
+
 ## Next steps
 
 - [ ] Fix `-a heuri` -> `-a heur` in all three workflows, rename `_heuri.json` -> `_heur.json`
@@ -5901,3 +5902,248 @@ Planned for 12.10. Design already fixed:
       `A` values, to show the A/B1 blindness empirically.
 - [ ] Fill columns 11 and 13 in `theoretical_evaluation_tables.md` for all three tools.
 
+
+# 12.10.2026 - sub-RQ2: integrated tool super-confused, fixed error in pipeline
+
+**Stand:** all three selected SCA tools are now integrated into all three service CI pipelines. the `-a heuri` typo and the missing nodejs
+upload entries are fixed, and the files are reviewed and ready to push. The important result of the day is **not** a tool detail: reading super-confused's source
+and DepCheck's output format showed that **purpose-built dependency-confusion tools test for the
+attack's precondition, not for the attack**, which means they may be silent in exactly the
+cells my experiment measures. it is the finding.
+
+
+## 2. Two defects from yesterday's push, fixed
+
+1. **`-a heuri` is not a valid analysis level.** DepGate's `src/constants.py` has
+   `LEVELS = ["compare", "comp", "heuristics", "heur", "policy", "pol", "linked"]`. Fixed
+   to `-a heur` in all three workflows.
+
+
+
+## 3. Decision: transitive dependencies of the tools are NOT pinned
+
+- **The image is the frozen artifact.** It is built once and every cell runs against that same image,
+  so transitive versions cannot drift *between* cells. Whatever variation exists is identical across
+  the entire experiment.
+- **Only one tool even has a dependency tree.** Trivy, Maven, Node, the runner binary are single
+  pinned downloads with SHA-256 checks; CPython is built from a pinned source tarball;
+  **super-confused has zero dependencies**. DepGate is the only one with range-declared dependencies.
+- **And it is already recorded.** The `/opt/depgate/bin/pip freeze` line in the DepGate step writes
+  the actual resolved set into every cell's artifact.
+- The only thing not guaranteed is that someone rebuilding from the Dockerfile in two years gets
+  byte-identical DepGate dependencies -> **one sentence in Limitations**
+
+Terminology note I had wrong: **`pip freeze` does not record pip's own version.** It lists the
+*installed packages* with `==` versions, and by default excludes pip itself (`pip freeze --all`
+would include it). 
+
+## 4. super-confused: checked the source file 
+
+### Why explicit file targets, not a directory scan
+
+My first instinct was `super-confused --json .`, i.e. the directory scan. However in source file:
+
+```js
+if (stats.isDirectory() && !entry.startsWith('.') && entry !== 'node_modules') {
+    await this.scanDirectory(fullPath);     // recurses
+}
+```
+
+- `scanDirectory` **recurses**, and its exclusion list is hardcoded: directories starting with `.`
+  plus the directorz name `node_modules`. It does **not** exclude other directories like `py_dependency`, `target` or
+  `build`. So a directory scan may deliver the wrong or incorrect result.
+- scan `package.json` and `package-lock.json` as **separate runs** - the
+  same direct-vs-transitive question `--direct-only` answers for DepGate.
+- In practice the two would mostly agree, because `supportedFiles` only matches known filenames and
+  `py_dependency/` contains only `<pkg>/` and `<pkg>-1.0.0.dist-info/` directories - no
+  `pyproject.toml`, no `requirements.txt`. So the directory scan was **dropped**
+
+###  no findings means a empty file
+
+```js
+if (vulnerabilities.length > 0) {
+    console.log(JSON.stringify(output, null, 2));
+}
+return;
+```
+
+- In `--json` mode, **when it finds nothing it prints nothing at all** - not `[]`, not `{}`. The
+  result file will be **0 bytes**.
+- A 0-byte file is indistinguishable from "the binary was missing", "the redirect failed" or "it
+  crashed". `if-no-files-found: warn` does not help, because the file exists and is merely empty.
+- **Therefore the positive control is mandatory, not optional.** It is the evidence the tool
+  works properly. the step ends with `ls -l`: file **sizes** are the evidence here.
+
+
+### Two table columns answerable from the source, before running pilot cells
+
+- **Column 11 (origin URL): NO, by construction.** The JSON holds only
+  `{ "<package name>": "<version>" }` pairs. No registry field, no URL field exists in the schema.
+- **Column 13 (exit code): does not break the build.** `process.exit(1)` fires only for a missing path
+  or a scan error; findings never change the exit code. And `main().catch(console.error)` means even
+  an unhandled rejection exits 0.
+- Its registries are **hardcoded** - `registry.npmjs.org`, `pypi.org/pypi/`, `search.maven.org` +
+  `repo1.maven.org`. 
+
+### The step design
+
+super-confused has **no `-o` flag**: its result goes to **stdout**. So:
+
+```bash
+super-confused --json pyproject.toml \
+  2>> "${sc_write_file}_log.txt" | tee "${sc_write_file}.json"
+echo "scan 1 exit code: ${PIPESTATUS[0]}" | tee -a "${sc_write_file}_log.txt"
+```
+
+- stdout -> the result file **and** the GitHub Actions console (via `tee`)
+- stderr -> the log file
+- `${PIPESTATUS[0]}` -> the tool's real exit code
+- **The one difference that must stay: `2>>`, NOT `2>&1`.** For Trivy and DepGate stdout is just
+  chatter and the result goes to `-o`, so folding stderr in does not have huge influence. Here **stdout is the data we need to check**,
+  and `2>&1 | tee file` would mix error messages into the JSON and produce a file the parser can't read.
+
+### Why two output files per tool and not one
+
+- **`.json`** holds *only* stdout - the result - so it stays machine-parseable.
+- **`_log.txt`** holds information about which scan ran, stderr, the exit code, the `ls -l`
+  results. The JSON result is **not** in it (`tee` sends stdout to the `.json` file and to the
+  *browser* workflow log, not into `_log.txt`).
+- delete log.txt or delete .json file: only `.json` loses the exit code, stderr, and any way to
+  interpret an empty result; only `_log.txt` loses a parseable result file.
+
+### command: `npm ls -g --depth=0 super-confused` 
+
+ the version record, the equivalent of
+`trivy version --format json` and `pip freeze` in the other two SCA tool step. `ls` lists installed
+packages, `-g` looks in the global location where `npm install -g` put it, `--depth=0` prints top
+level only. show the version of installed super-confused
+
+
+
+## 5. finding: DC tools test the attack's precondition, not the attack
+
+### What I noticed
+
+DepCheck's own output reads:
+
+> `[!] VULNERABLE - Not found on public registry:` ... *"An attacker **can** register these on the
+> public npm registry with a higher version -> Remote Code Execution!"*
+
+The DC-claimed Tool on github such as `confused`, `dustilock`, `snync`, super-confused, DepCheck and DepGate at `compare`
+level all implement the **same primitive**:
+
+> for each dependency name in the manifest, query the public registry; if the name is **absent**,
+> report it as hijackable.
+
+That is a **precondition test**. It detects *exposure* (the attack is possible), **not** *compromise*
+(the attack happened).
+
+### The inversion, stated precisely
+
+The detection condition is "name absent from the public registry". I published version 1.0.3 of
+every internal name, so **the condition is false in every cell of my matrix** and the tool is
+silent. A tool's detection capability is therefore **inversely related to attack progress**: it
+fires before the attack and goes quiet the moment the attack succeeds.
+
+That is not a bug in the tools and not a mistake in my setup. It is what the primitive does.
+
+
+
+- **"The experiment is not invalid"** - It is well defined either way: run the tools against pipeline
+  states that sub-RQ1 showed to be compromised, and record what they report. A null result is a
+  result, *provided* the tool actually works properly (which is what the positive control establishes).
+- **"The experiment measures something other than I assumed"**
+
+
+### What is still empirical
+
+- **DepGate's heuristics level.** `risk.minVersions`, `risk.isNew`, trust-score and provenance
+  regression are **not** precondition tests. My attacker packages have exactly one published
+  version, recent, unsigned. If `minVersions` fires, DepGate flags the attack - **through a
+  different mechanism than the one it advertises.** Testable tomorrow.
+- **Input mode** per tool and ecosystem: whether a tool reads the file carrying the *resolved*
+  version (lock file) or only the declared range.
+- **Trivy's output model** - already measured on 10.10: no origin field in either format.
+- **Whether each tool runs at all** (HR1) - which is what the positive control is for.
+
+
+
+1. **It answers the research question with a mechanism instead of a rate.** *The tools that claim DC
+   detection test for the attack's precondition, so they are structurally blind to a realized
+   substitution; the general-purpose tool has no origin field in its output model and no advisory
+   exists for an attacker package, so it is blind for a different reason.* Both claims rest on tool
+   architecture and are verifiable from source
+
+2. **It turns the answer into a capability taxonomy** 
+
+| | what it can see | why it misses my attack |
+|---|---|---|
+| DC-specific, name-existence check | *exposure*: an internal name nobody has claimed | the name is claimed now, so the check inverts to "safe" |
+| DC-specific, heuristic signals | version-count / age / provenance anomalies | open - may actually fire, by a different mechanism than claimed |
+| general-purpose SCA (Trivy) | package name + version matched against advisories | no origin field in the output; no advisory exists for the attacker package |
+
+1. Sub-RQ1 established *which pipeline
+   configurations cause an internal name to resolve from a public source*. Sub-RQ2 now establishes
+   that what these tools actually reported. The gap is not "tools are bad" -
+   it is that the available tooling checks a precondition and does not checks resolved origin. need to consider classification logic.
+
+### Decisions taken
+
+- **Do not change the application, and do not change the research question.** 
+
+- **Report per tool: outcome + reason + the signal it tested**
+
+- **Record the tool scan logic as a finding**
+
+
+## 6. Are super-confused and DepGate the only DC-specific tools that passed? No - there is a third
+
+From `sca_tool_screening_v2.xlsx`, column J (hard-requirement verdict), the Source-B tools that
+reached Stage 2:
+
+| Tool | Verdict | Why it is / is not in the final 3 |
+|---|---|---|
+| `cognitivegears/depgate` | **PASS**, no caveats | selected |
+| `6mile/super-confused` | **PASS**, 2 caveats | selected |
+| `BlackHatExploitation/depcheck` | **PARTIAL PASS** | passes HR2-HR5 and reads all three of my manifests. Lost on **HR6**: no releases, no tags, not on PyPI or npm, so pinnable only by git commit SHA. Also ships `--exploit`, which publishes malicious packages to real registries, and has no licence file |
+
+And **two more** whose HR3 was recorded as **"not verifiable"** rather than failed, because their
+READMEs never name the manifest filenames: `D3Ext/dep-scanner` and `synacktiv/DepFuzzer`. Their HR3
+can only be settled by *running* them - DepFuzzer has **96 stars** against super-confused's 10.
+
+So if super-confused fails the technical evaluation there are documented fallbacks, and the plan
+already contains a pre-stated tie-break (rank survivors by maintenance signal and adoption, record
+the cut-off applied).
+
+
+(expected) super-confused prints nothing when clean. But **"reports nothing" is the measurement.** the gate
+for the final 3 is **integration feasibility only**.
+
+- It **runs**, produces a parseable (even empty) result, and the positive control is used -> **it
+  stays**, and "no DC alert in any cell" is the result.
+- It **fails HR1** - will not run, or output cannot be parsed at all -> *then* replace it from
+  DepCheck / dep-scanner / DepFuzzer, and record why.
+
+among DC-claiming tools on GitHub that support all three
+ecosystems and read specific manifests, this is what the field actually offers. That is a result about
+the state of DC tooling, not a weakness in the selection.
+
+## 7. Pipeline review before the push
+
+Reviewed all three workflow files. All three parse as valid YAML; all three SCA steps are guarded by
+`if: inputs.run_sca == 'on'` with `continue-on-error: true` and the correct `working-directory`. some small errors are fixed.
+
+
+## Next steps
+
+- [ ] run the pilot cells with `run_sca = on`, in this order:
+      1. `pip_A1a_B1a_B2b_C1c` - all three tools on a known `malicious_resolved` cell
+      2. `npm_A1a_B1a_B2b_C1c` 
+      3. `pip_A1a_B1a_B2b_C1b` - the declared-vs-installed demonstration (Trivy scan 3 should report
+         **1.0.0** out of `py_dependency/` while the cell's real outcome is 1.0.3)
+      4. `pip_A1a_B1a_B2a_C1a` 
+      5. `mvn_A1a_B1a_B2b_C1c`
+
+- [ ] Record, per tool per cell: did it run, did it name `1.0.3`, is any origin URL present, what
+      exit code, which signal did it test, and did the positive control fire.
+- [ ] Write up the inversion (section 5) as a named finding, with the capability taxonomy table.
