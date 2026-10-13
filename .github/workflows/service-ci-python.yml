@@ -253,23 +253,29 @@ jobs:
 
           trivy version --format json | tee "${trivy_write_file}_version.json"
 
-          echo "scan 1: declared only, json" | tee "${trivy_write_file}_log.txt"
+          echo "scan 1: analyze declared dep only, installed dirs skipped, output format json" | tee "${trivy_write_file}_log.txt"
           trivy fs . $SKIP --scanners vuln --list-all-pkgs --no-progress --skip-db-update \
             --format json --output "${trivy_write_file}_declared.json" \
             2>&1 | tee -a "${trivy_write_file}_log.txt"
           echo "scan 1 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
 
-          echo "scan 2: declared only, cyclonedx" | tee -a "${trivy_write_file}_log.txt"
-          trivy fs . $SKIP --no-progress --skip-db-update \
-            --format cyclonedx --output "${trivy_write_file}_declared.cdx.json" \
+          echo "scan 2: analyze declared dep only, installed dirs skipped, output format cyclonedx (json)" | tee -a "${trivy_write_file}_log.txt"
+          trivy fs . $SKIP --scanners vuln --no-progress --skip-db-update \
+            --format cyclonedx --output "${trivy_write_file}_declared_cdx.json" \
             2>&1 | tee -a "${trivy_write_file}_log.txt"
           echo "scan 2 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
 
-          echo "scan 3: everything, json" | tee -a "${trivy_write_file}_log.txt"
+          echo "scan 3: analyze declared dep only, installed dirs skipped, output format spdx-json" | tee -a "${trivy_write_file}_log.txt"
+          trivy fs . $SKIP --scanners vuln --no-progress --skip-db-update \
+            --format spdx-json --output "${trivy_write_file}_declared_spdx.json" \
+            2>&1 | tee -a "${trivy_write_file}_log.txt"
+          echo "scan 3 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
+
+          echo "scan 4: check ALL files, installed dirs included, output format json" | tee -a "${trivy_write_file}_log.txt"
           trivy fs . --scanners vuln --list-all-pkgs --no-progress --skip-db-update \
             --format json --output "${trivy_write_file}_all.json" \
             2>&1 | tee -a "${trivy_write_file}_log.txt"
-          echo "scan 3 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
+          echo "scan 4 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
 
 
           ls -l ${trivy_write_file}_* | tee -a "${trivy_write_file}_log.txt"
@@ -284,8 +290,7 @@ jobs:
         run: |
           depgate_write_file="${{ inputs.cell_id }}_depgate"
           
-          /opt/depgate/bin/pip freeze | tee "${depgate_write_file}_versions.txt"
-
+          /opt/depgate/bin/pip show depgate | tee "${depgate_write_file}_versions.txt"
 
           echo "depgate scan 1: analysis level - compare" | tee "${depgate_write_file}_log.txt"
           depgate scan -t pypi -d . -a compare \
@@ -361,7 +366,9 @@ jobs:
             services/python/${{ inputs.cell_id }}_trivy_version.json
             services/python/${{ inputs.cell_id }}_trivy_log.txt
             services/python/${{ inputs.cell_id }}_trivy_declared.json
-            services/python/${{ inputs.cell_id }}_trivy_declared.cdx.json
+            services/python/${{ inputs.cell_id }}_trivy_declared_cdx.json
+            services/python/${{ inputs.cell_id }}_trivy_declared_spdx.json
+
             services/python/${{ inputs.cell_id }}_trivy_all.json
 
             services/python/${{ inputs.cell_id }}_depgate_versions.txt

@@ -217,7 +217,8 @@ COPY --chown=runner:runner settings.xml /home/runner/.m2/settings.xml
 # and fix the vuln database version for reproducibility
 
 # This runs as the "runner" user, so the cache goes to /home/runner/.cache/trivy.
-# TRIVY_CACHE_DIR is set explicitly
+# TRIVY_CACHE_DIR is set explicitly, so no flag "--cache-dir" is nessasary,
+# the trivy db will download into the specific directory
 ENV TRIVY_CACHE_DIR=/home/runner/.cache/trivy
 
 RUN trivy image --download-db-only --no-progress \

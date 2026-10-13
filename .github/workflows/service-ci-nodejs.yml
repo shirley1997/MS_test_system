@@ -268,8 +268,8 @@ jobs:
           echo "scan 1 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
 
           echo "scan 2: declared only, cyclonedx" | tee -a "${trivy_write_file}_log.txt"
-          trivy fs . $SKIP --no-progress --skip-db-update \
-            --format cyclonedx --output "${trivy_write_file}_declared.cdx.json" \
+          trivy fs . $SKIP --scanners vuln --no-progress --skip-db-update \
+            --format cyclonedx --output "${trivy_write_file}_declared_cdx.json" \
             2>&1 | tee -a "${trivy_write_file}_log.txt"
           echo "scan 2 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
 
@@ -281,8 +281,8 @@ jobs:
 
           ls -l ${trivy_write_file}_* | tee -a "${trivy_write_file}_log.txt"
 
-          # the step of run DepGate scan
-      # with 2 analysis mode (the output will be compared): compare, heuristics
+      # the step of run DepGate scan
+      # use 2 analysis mode (the output will be compared): compare, heuristics
       - name: Run DepGate (SCA Tool)
         if: inputs.run_sca == 'on'
         working-directory: services/nodejs
@@ -290,7 +290,8 @@ jobs:
         run: |
           depgate_write_file="${{ inputs.cell_id }}_depgate"
           
-          /opt/depgate/bin/pip freeze | tee "${depgate_write_file}_versions.txt"
+          /opt/depgate/bin/pip show depgate | tee "${depgate_write_file}_versions.txt"
+
 
           echo "depgate scan 1: analysis level - compare" | tee "${depgate_write_file}_log.txt"
           depgate scan -t npm -d . -a compare \
@@ -378,7 +379,7 @@ jobs:
             services/nodejs/${{ inputs.cell_id }}_trivy_version.json
             services/nodejs/${{ inputs.cell_id }}_trivy_log.txt
             services/nodejs/${{ inputs.cell_id }}_trivy_declared.json
-            services/nodejs/${{ inputs.cell_id }}_trivy_declared.cdx.json
+            services/nodejs/${{ inputs.cell_id }}_trivy_declared_cdx.json
             services/nodejs/${{ inputs.cell_id }}_trivy_all.json
 
             services/nodejs/${{ inputs.cell_id }}_depgate_versions.txt
