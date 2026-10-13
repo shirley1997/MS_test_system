@@ -6147,3 +6147,851 @@ Reviewed all three workflow files. All three parse as valid YAML; all three SCA 
 - [ ] Record, per tool per cell: did it run, did it name `1.0.3`, is any origin URL present, what
       exit code, which signal did it test, and did the positive control fire.
 - [ ] Write up the inversion (section 5) as a named finding, with the capability taxonomy table.
+
+
+# 13.10.2026 - sub-RQ2: installed all SCA tools locally on Windows, ran the pipeline commands by hand, inspected every output file
+
+**Stand:** installed Trivy, DepGate, super-confused (and additionally DepCheck, which is only a
+fallback candidate) on Windows machine, at the **same versions as in the runner image**, in a
+sandbox that cannot touch my development environment and that git cannot see. Then I ran the same
+commands that are written in the CI workflows, by hand, against `services/python`, and read every
+output file. The purpose was to understand what each flag in the pipeline actually does and what the
+output of each tool really contains, before spending CI runs on it.
+
+Everything written below is an observation from a **local** run on `services/python` in its current
+state. It is not a measurement of a cell. 
+
+
+
+## 2. local directory for installed SCA tools
+
+
+Scan outputs go into `sub-RQ2_tool_selection/tool_scan_pilot/`. 
+
+
+### How isolation was kept
+
+- **Nothing was added to `PATH`.** Every tool is called by its full path, through a shell variable.
+- **`npm install --prefix`, never `npm install -g`.** Global would write into
+  `C:\Users\xueti\AppData\Roaming\npm`, which *is* my development environment.
+- **DepGate went into its own venv**, and I never "activated" it - I call
+  `depgate_venv/Scripts/pip.exe` by full path. Activating would put the venv's `python` and `pip` in
+  front of my real ones for the whole session. (The image avoids the same problem with a **symlink**
+  instead of putting `/opt/depgate/bin` on `PATH`.)
+- **`export TRIVY_CACHE_DIR=...` only, never `setx`.** The variable lives in one terminal window and
+  disappears when I close it. Nothing permanent was changed on the machine.
+- Everything can be removed with `rm -rf` of that one folder.
+
+Isolation check afterwards: `npm ls -g --depth=0` does not list super-confused, my normal Python has
+no `depgate`, and `where trivy depgate super-confused` finds nothing.
+
+### Setup file, so variables are never empty
+
+I lost time three separate times to the same bug: a variable was empty, so a path collapsed. First
+time `mkdir -p "$SCA"/{...}` tried to create `/trivy` (the root of C:) and said *Permission denied*;
+later Trivy tried to write to `C:/Program Files/Git/python_trivy_declared.json`, because in Git Bash
+a leading `/` means the **Git installation folder**, not the drive root.
+
+Fix - one file, sourced at the start of every new terminal:
+
+```bash
+# D:\Master_Winfo\MA_Supply_chain_security\sca_tool_install\env.sh
+SCA=/d/Master_Winfo/MA_Supply_chain_security/sca_tool_install
+SCAW="D:/Master_Winfo/MA_Supply_chain_security/sca_tool_install"
+REPO=/d/Master_Winfo/MA_Supply_chain_security/MS_test_system
+TRIVY="$SCA/trivy/trivy/trivy.exe"
+DEPGATE="$SCA/depgate_venv/Scripts/depgate.exe"
+SC="$SCA/superconfused/node_modules/super-confused/super-confused.js"
+OUT="$REPO/sub-RQ2_tool_selection/tool_scan_pilot"
+export TRIVY_CACHE_DIR="$SCAW/trivy_cache"
+```
+
+```bash
+source /d/Master_Winfo/MA_Supply_chain_security/sca_tool_install/env.sh
+```
+
+`source` runs it **inside** the current shell so the variables stay; `./env.sh` would start a child
+shell and the variables would die with it.
+
+**Rule I keep from this:** a variable I did not `echo` is a variable that is empty.
+
+### Two Windows-only details
+
+- **Arguments vs environment variables.** Git Bash automatically rewrites `/d/...` into `D:\...` when
+  it passes a path as a **command argument**, but **not** for environment variables. So the
+  `--cache-dir` flag takes `$SCA` (`/d/...` form) while `TRIVY_CACHE_DIR` needs `$SCAW` (`D:/...`
+  form). In the Ubuntu container this problem does not exist.
+- **`./trivy.exe` works, `trivy.exe` does not.** Bash never searches the current folder; only `PATH`.
+  That is deliberate and is itself a supply-chain defence - if the current folder were searched, a
+  planted `git.exe` in a folder I `cd` into would hijack my commands. (Windows `cmd.exe` *does*
+  search the current folder, which is why this attack class works there.)
+
+
+## 3. Installing the tools - commands and pins
+
+### 3.1 Trivy 0.75.0
+
+Same version as `ARG TRIVY_VERSION=0.75.0` (Dockerfile line 166). Windows build of the same Go binary.
+
+```bash
+curl -fsSL -o "$SCA/trivy/trivy.zip" \
+  https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_windows-64bit.zip
+
+echo "4e43bd71a30f51aee39525f60f2b47043af77eb8df8fe082aae4372b69c6660f  $SCA/trivy/trivy.zip" | sha256sum -c -
+
+unzip trivy.zip -d trivy
+./trivy.exe --version        # -> Version: 0.75.0
+```
+
+- The checksum in my Dockerfile (`c6e65abd...`) is for the **Linux `.tar.gz`**. Different file,
+  different hash, same release. The Windows zip hash is `4e43bd71...`, taken from the official
+  `trivy_0.75.0_checksums.txt` in the release assets.
+- Trivy is a **single .exe**: no installer, no registry entry, nothing on `PATH`.
+
+Then the vulnerability database (Dockerfile line 223):
+
+```bash
+export TRIVY_CACHE_DIR="$SCAW/trivy_cache"
+"$TRIVY" image --download-db-only --no-progress
+```
+
+Output:
+
+```
+INFO [vulndb] Downloading artifact...  repo="mirror.gcr.io/aquasec/trivy-db:2"
+INFO [vulndb] Artifact successfully downloaded
+```
+
+- It took **42 seconds**; the cache now holds `db/trivy.db` and `db/metadata.json`.
+- It says `image` even though I scan files - `--download-db-only` just fetches and exits, the
+  sub-command is irrelevant.
+- **Observation worth keeping:** the vulnerability database is itself shipped **as a container image
+  from a registry mirror**. Trivy's own knowledge of "what is vulnerable" is a supply-chain
+  dependency fetched at scan time. That is exactly why the DB is baked into the runner image and why
+  every scan passes `--skip-db-update`.
+- I did **not** download the Java DB. It is only used to identify `.jar` files by hash; I scan
+  `pom.xml`, which is a text file.
+- The local DB is from **today**, the image's DB was baked on 11.10. Same binary, different DB -> the
+  **package list** is comparable, the **CVE list** is not. Local output is for understanding, not for
+  thesis numbers.
+
+Two equivalent ways to set the cache folder, both of which I used:
+
+```bash
+# flag form - argument, so the /d/ form is converted automatically
+"$TRIVY" --cache-dir "$SCA/trivy_cache" image --download-db-only --no-progress
+# environment form - needs the D:/ form
+export TRIVY_CACHE_DIR="$SCAW/trivy_cache"
+```
+
+Every Trivy flag has an environment twin: `--cache-dir` / `TRIVY_CACHE_DIR`, `--no-progress` /
+`TRIVY_NO_PROGRESS`, and so on. I use the **environment** form because that is what the Dockerfile
+uses (`ENV TRIVY_CACHE_DIR=...`, line 221) and because the pipeline steps pass **no** cache flag at
+all - they rely on the `ENV`. Also: with the flag I could forget it on one scan out of fifteen and
+silently write 121 MiB somewhere else.
+
+**Note on a command from the trivy-db README**: `trivy --cache-dir $TRIVY_TEMP_DIR image
+--download-db-only` does not work as written. `$TRIVY_TEMP_DIR` is a variable **that page defines in
+its own CI example**, not a Trivy variable. On my machine it is empty, so the line collapses to
+`trivy --cache-dir image --download-db-only` - `--cache-dir` eats the word `image` and there is no
+sub-command left. Same class of bug as my `/trivy` mkdir error.
+
+### 3.2 DepGate 0.10.0
+
+Same version as `ARG DEPGATE_VERSION=0.10.0` (Dockerfile line 196).
+
+```bash
+py -3.12 -m venv "$SCA/depgate_venv"
+"$SCA/depgate_venv/Scripts/pip.exe" install --index-url https://pypi.org/simple "depgate==0.10.0"
+"$SCA/depgate_venv/Scripts/pip.exe" show depgate | head -2    # -> Version: 0.10.0
+```
+
+- **`--index-url` was necessary.** My laptop's pip is permanently configured to use my Nexus group
+  repo, so the venv inherited it and tried
+  `http://admin:****@localhost:8081/repository/pypi-group-public-first/simple/`, which failed with
+  `WinError 10061` (connection refused) because the Nexus container was not running. I did **not**
+  edit my global `pip.ini` - a command-line flag beats a config file, so the override is per command
+  only. Diagnose with `pip config debug`.
+  - Side observation: my own development machine is sitting in configuration **A1a** - index points
+    at the Nexus group, public first. It is one of my own cells.
+- No `--trusted-host`: that flag disables TLS verification and is only needed for plain-HTTP indexes
+  like local Nexus. pypi.org is HTTPS.
+- **DepGate has no `--version` flag.** Its CLI goes straight into the `scan` sub-command, so
+  `depgate --version` prints the `scan` usage and complains about the missing `-t`. The version has
+  to come from pip.
+
+### 3.3 super-confused 1.2.0
+
+Same version as `ARG SUPER_CONFUSED_VERSION=1.2.0` (Dockerfile line 186).
+
+```bash
+npm install --prefix "$SCA/superconfused" super-confused@1.2.0
+npm ls --prefix "$SCA/superconfused" --depth=0        # -> super-confused@1.2.0
+SC="$SCA/superconfused/node_modules/super-confused/super-confused.js"
+"$SC"
+```
+
+- `--prefix` tells npm to treat that folder as the project root; it creates `node_modules` and a
+  `package-lock.json` there and touches nothing else.
+- `npm view super-confused@1.2.0` gives `bin = { 'super-confused': 'super-confused.js' }`, **no
+  dependencies**, and the integrity hash
+  `sha512-i3h2d+xAbUzRIedtR46lhBowp894DVAWZFQlynVVg569ogqAu+UHtRiG7kwTRsIynyUDXtBe85g+hI5EAK/+Vw==`.
+- I call the `.js` file directly. It works without `node` in front because its first line is a shebang
+  (`head -1 "$SC"` -> `#!/usr/bin/env node`) and Git Bash honours shebangs. In PowerShell I would
+  need `node "$SC"`.
+- `node_modules/.bin/` also contains launchers (`super-confused.cmd`). `ls` hides it because the name
+  starts with a dot - `ls -a` shows it. In the container `npm install -g` put that launcher on
+  `PATH`, which is why the pipeline can simply write `super-confused --json pyproject.toml`.
+- Its usage line is the whole configuration surface:
+
+```
+Usage: super-confused [--json] <path|url>
+```
+
+  **One single option.** No registry setting, no config file, no thresholds - which confirms that the
+  registries are hardcoded in the source.
+
+### 3.4 DepCheck (extra - fallback candidate, not one of the selected three)
+
+Not installed in the runner, not in the pipelines. I ran it locally only, to see what the third
+DC-specific candidate from the screening table actually does.
+
+```bash
+curl -fsSL -o "$SCA/depcheck/depcheck.py" \
+  https://raw.githubusercontent.com/BlackHatExploitation/depcheck/3c55d2905c8f1852e98e8ba96f38fbd9a3ed91b0/depcheck.py
+
+echo "235f267a040e9d1e5f7c3702e574e6bda4e7d42a69fb6b9c604b9d2fe59d8a96  $SCA/depcheck/depcheck.py" | sha256sum -c -
+python -I "$SCA/depcheck/depcheck.py" --version
+```
+
+- The repo has **no releases and no tags**, so a **commit SHA is the only way to pin it** - this is
+  exactly the HR6 problem recorded in the screening table, now experienced directly. I pinned by SHA
+  **and** recorded my own SHA-256 of the file.
+- Repo facts as of today: language Python, 3 files (`depcheck.py`, `web.py`, `README.md`),
+  **1 star**, **no LICENSE**, last push **2026-02-19**.
+- It imports **only the Python standard library** - nothing is installed anywhere. The cleanest
+  isolation of all four tools.
+- **Safety:** this tool has an offensive half. `--exploit` **publishes malicious packages to real
+  public registries**; there are also `--callback`, `--npm-token`, `--pypi-token`, `--github-token`,
+  `--save-creds`, and a `--web` UI on port 8443. The source contains the payload templates it would
+  publish (a `setuptools`+`socket` snippet around line 1209, a `java.net` one around line 1886).
+  **I only ever used the read-only scan.**
+- `python -I` = isolated mode, so Python cannot import modules out of the current folder - standard
+  hygiene for a downloaded script, otherwise a planted `json.py` next to the manifests would be
+  imported instead of the real one.
+
+**Mistake worth recording:** my first download was the GitHub *web page*, not the file. Python then
+failed with `SyntaxError: invalid character` on a line containing `<title>... GitHub</title>`.
+`github.com/...` serves a page **about** a file;
+`raw.githubusercontent.com/<owner>/<repo>/<sha>/<path>` serves the **file**. The checksum step would
+have caught it immediately with `FAILED` instead of a confusing Python error. New habit: after
+downloading, `head -3` the file - if it starts with `<!DOCTYPE` or `<title>`, it is a page.
+
+
+## 4. Reference links collected today
+
+Trivy (the README and the narrative docs only explain *selected* flags; the **complete** flag list per
+sub-command is under References -> Configuration -> CLI, and the page is called `trivy_filesystem`,
+not `trivy_fs`):
+
+- filesystem target: https://trivy.dev/docs/latest/target/filesystem/
+- code repository target: https://trivy.dev/docs/latest/target/repository/
+- **all flags of `trivy fs`**: https://trivy.dev/docs/latest/references/configuration/cli/trivy_filesystem/
+- **same page pinned to my version 0.75.0** (this is the one to cite):
+  https://github.com/aquasecurity/trivy/blob/v0.75.0/docs/guide/references/configuration/cli/trivy_filesystem.md
+- skipping files and directories (`--skip-dirs`, `--skip-files`, glob syntax):
+  https://trivy.dev/docs/latest/configuration/skipping/
+- SBOM formats (`cyclonedx`, `spdx`, `spdx-json`): https://trivy.dev/docs/latest/supply-chain/sbom/
+- database: https://trivy.dev/docs/latest/configuration/db/
+- release assets + checksums file: https://github.com/aquasecurity/trivy/releases/tag/v0.75.0
+
+DepGate:
+
+- analysis levels and scoring: https://github.com/cognitivegears/depgate/blob/main/docs/analysis-levels.md
+- package metadata (how I counted its 11 declared dependencies):
+  https://pypi.org/pypi/depgate/0.10.0/json -> field `info.requires_dist`
+
+super-confused:
+
+- npm page: https://www.npmjs.com/package/super-confused
+- metadata without installing: `npm view super-confused@1.2.0 dependencies bin dist.integrity`
+
+DepCheck:
+
+- the pinned commit: https://github.com/BlackHatExploitation/depcheck/commit/3c55d2905c8f1852e98e8ba96f38fbd9a3ed91b0
+
+**But the best reference is the binary itself** - `trivy fs --help`, `depgate scan --help`,
+`python -I depcheck.py --help` print the flags of *exactly my version*, offline, with no
+documentation-version mismatch.
+
+
+## 5. Trivy - the pipeline command, flag by flag
+
+The exact flag list from the v0.75.0 docs (and from `trivy fs --help`):
+
+```
+      --list-all-pkgs        output all packages in the JSON report regardless of vulnerability (default true)
+      --skip-dirs strings    specify the directories or glob patterns to skip
+      --scanners strings     comma-separated list of what security issues to detect
+                             (allowed values: vuln,misconfig,secret,license) (default [vuln,secret])
+      --skip-db-update       skip updating vulnerability database
+      --no-progress          suppress progress bar
+  -f, --format string        format
+  -o, --output string        output file name
+```
+
+Why each flag is in my pipeline:
+
+| flag | why |
+|---|---|
+| `fs .` | scan the folder as it is on disk |
+| `--skip-dirs py_dependency .venv build` | exclude the *installed* packages, keep the *declared/resolved* record |
+| `--scanners vuln` | the default is `[vuln,secret]`, so this switches the **secret** scanner off. Without it Trivy would also hunt for leaked credentials - and my `pip.conf` contains `http://admin:password@localhost:8081/...`, so my own test password would appear as a finding |
+| `--list-all-pkgs` | list **every** package, not only vulnerable ones. Without it my attacker packages disappear from the output, because no CVE exists for them. It is `(default true)` in 0.75.0, but I pass it explicitly: defaults change between versions, an explicit flag does not |
+| `--no-progress` | removes the progress bar only |
+| `--skip-db-update` | use the DB baked into the image, no network at scan time |
+| `--format` + `--output` | `--format` makes it machine-readable, `--output` sends the result to a **clean file** while log messages go to the screen. Without `--output`, the JSON would be printed mixed with log lines and `tee` would save a file no parser can read |
+| `2>&1 \| tee` | fold stderr into the log file. Safe **because** the result went to `--output`, not to stdout |
+| `${PIPESTATUS[0]}` | the exit code of **trivy**, not of `tee`. `$?` after a pipe returns tee's status, always 0 |
+
+**Why `-q/--quiet` is NOT used**, even though it also hides the progress bar:
+
+```
+--no-progress    suppress progress bar
+-q, --quiet      suppress progress bar and log output
+```
+
+`-q` also removes the **log output** - the lines saying which target file was detected and which
+analyzer ran. That log is the `_trivy_log.txt` artifact. Rule for all three tools: **suppress
+decoration, never suppress logs.**
+
+**Why `trivy fs` and not `trivy repo`:** `trivy repo <url>` clones a git repository. The files that
+matter in each cell (`pylock.<cell_id>.toml`, `package-lock.json`, the generated `pyproject.toml`)
+are created **during the job** and never committed, so `trivy repo` pointed at my GitHub URL would
+scan the committed source and measure the wrong thing.
+
+**Why not scan a single file** (`trivy fs <file>` is possible): the filename is not known in advance -
+C1a cells have no lock file, C1c Python cells have `pylock.<cell_id>.toml` with a changing name, and
+the npm failure paths delete `package-lock.json`. `trivy fs .` adapts by itself; a file scan would
+need per-ecosystem `if` logic and, if the name were ever wrong, would scan nothing and still exit 0 -
+a silent hole in the data.
+
+**Why three separate scans for three formats:** `--format` takes **one** value. One run = one format.
+Scans 1-3 are not redundant, they are the same scan rendered into the formats I want to compare.
+
+### What I ran
+
+```bash
+cd "$REPO/services/python"
+PFX="$OUT/python_trivy"
+FLAGS="--scanners vuln --list-all-pkgs --no-progress --skip-db-update"
+SKIP="--skip-dirs py_dependency --skip-dirs .venv --skip-dirs build"
+
+"$TRIVY" fs . $SKIP $FLAGS --format json       --output "${PFX}_declared.json"      2>&1 | tee    "${PFX}_log.txt"
+"$TRIVY" fs . $SKIP $FLAGS --format cyclonedx  --output "${PFX}_declared.cdx.json"  2>&1 | tee -a "${PFX}_log.txt"
+"$TRIVY" fs . $SKIP $FLAGS --format spdx-json  --output "${PFX}_declared.spdx.json" 2>&1 | tee -a "${PFX}_log.txt"
+"$TRIVY" fs .       $FLAGS --format json       --output "${PFX}_all.json"           2>&1 | tee -a "${PFX}_log.txt"
+```
+
+Putting the flags in `$FLAGS` and `$SKIP` is not cosmetic: it makes it impossible to give one scan a
+different flag set by accident. Only **one** thing differs per scan - the format in 1-3, the
+directory scope in 4.
+
+### Output files
+
+```
+python_trivy_declared.json        42146 bytes
+python_trivy_declared.cdx.json    35724
+python_trivy_declared.spdx.json   41897
+python_trivy_all.json             42145
+python_trivy_log.txt
+```
+
+### Observations
+
+**(a) What Trivy took as input.** The log says `Number of language-specific files num=2` and the JSON
+has two `Results` entries: `pylock.test.toml` (16 packages) and `pylock.test3.toml` (15). Those are
+two leftover test lock files from August that still sit in `services/python`.
+
+`pyproject.toml` is **not** counted - if it were a target, the number would be 3. But it **was**
+read: my `pyproject.toml` declares exactly `Flask`, `xueting-thesis-event-fengfu` and
+`xueting-thesis-service-zhuanfa`, and those are exactly the three packages Trivy marks
+`"Relationship": "direct"` while the other 12 are `indirect`. That direct/indirect split can only
+come from `pyproject.toml`. So for Python, `pyproject.toml` is a **helper**, never a target -
+consistent with what I read in the source on 10.10 (`pylockAnalyzer.PostAnalyze()` loops over lock
+files only).
+
+**(b) The complete record of one attacker package in JSON:**
+
+```json
+{ "ID": "xueting-thesis-event-fengfu@1.0.0",
+  "Name": "xueting-thesis-event-fengfu",
+  "Identifier": { "PURL": "pkg:pypi/xueting-thesis-event-fengfu@1.0.0", "UID": "27afb2f323f61120" },
+  "Version": "1.0.0", "Relationship": "direct", "AnalyzedBy": "pylock" }
+```
+
+No origin field of any kind.
+
+**(c) CycloneDX 1.7** - 33 components, and **0 of them have an `externalReferences` array**. Each
+component carries only `purl` plus two Trivy-internal properties (`aquasecurity:trivy:PkgID`,
+`aquasecurity:trivy:PkgType`).
+
+**(d) SPDX 2.3** - 34 packages, and the field designed exactly for this is empty in every one:
+
+```json
+"supplier": "NOASSERTION",
+"downloadLocation": "NONE",
+"externalRefs": [{ "referenceType": "purl",
+                   "referenceLocator": "pkg:pypi/xueting-thesis-event-fengfu@1.0.0" }]
+```
+
+`downloadLocation: "NONE"` for **all 34**. (Trivy's own SBOM documentation shows the same `"NONE"` in
+its example output.)
+
+**(e) The JSON contains 111 occurrences of `http`** - and every single one is a **CVE advisory link**
+(`nvd.nist.gov`, `access.redhat.com`, `avd.aquasec.com`,
+`github.com/pallets/flask/security/advisories`, ...). Not one is a package origin. The output records
+in detail where to *read about* a vulnerability, and nothing about where the code was *downloaded
+from*.
+
+**(f) The origin was in the input and was discarded.** `pylock.test.toml` contains **15 lines** like:
+
+```toml
+url = "http://localhost:8081/repository/pypi-group-public-first/packages/blinker/1.9.0/blinker-1.9.0-py3-none-any.whl"
+```
+
+Trivy parsed that file successfully (every name and version is correct) and did not carry the `url`
+into any of the three outputs.
+
+**(g) Nexus was stopped for the whole session.** All scans completed normally, which shows that
+`trivy fs` makes **no registry calls** - it reads files plus the local DB. So "the registry was
+unreachable" cannot explain the missing URL. The only possible source was the file on disk.
+
+**(h) Why Trivy's own documentation shows a `repository_url` and mine does not.** The doc example
+
+```
+pkg:oci/alpine@sha256:19b4...?arch=amd64&repository_url=index.docker.io%2Flibrary%2Falpine
+```
+
+is the purl of the **container image** - the artifact Trivy itself pulled from a registry. The
+packages *inside* that image (`pkg:apk/alpine/zlib@1.2.11-r3?distro=3.15.0`) have **no**
+`repository_url` either. So Trivy records an origin only for what it downloaded itself; for language
+packages it reads a file and never fetches anything. The purl standard has the field and Trivy fills
+it elsewhere - so this is a property of the language parsers, not of the format.
+
+**(i) Scan 4 (no `--skip-dirs`) came back byte-identical to scan 1**, apart from `ReportID` and
+`CreatedAt` - while `services/python/.venv/Lib/site-packages` contains **39** `*.dist-info/METADATA`
+files, and both scans logged `num=2`. So in this local folder Trivy did not read the installed
+packages. **This is not transferable to the cells**: `.venv` is hidden and nests under
+`Lib/site-packages`, while `py_dependency/` is a visible, flat `pip install --target` folder. It has
+to be decided in the pilot (see section 10).
+
+**(j) Trivy warns about a flag combination:**
+
+```
+WARN "--list-all-pkgs" is only valid for the JSON format, for other formats a list of packages is automatically included.
+```
+
+So `--list-all-pkgs` belongs on the JSON scans only.
+
+**(k) From the SBOM documentation:** *"`--format cyclonedx` disables security scanning"* - to include
+vulnerabilities, `--scanners vuln` must be added. With it, my CycloneDX file contains both the
+components **and** a `vulnerabilities` section with 5 entries; the SPDX file has only `packages` and
+`relationships` and **no vulnerability section at all**.
+
+
+## 6. DepGate - the pipeline command, flag by flag
+
+| flag | why |
+|---|---|
+| `scan` | the only sub-command |
+| `-t pypi` | which **public** registry to query (`npm` / `maven` in the other two pipelines) |
+| `-d .` | read manifests from this directory |
+| `-a compare` / `-a heur` | the two analysis levels I compare |
+| `-o <file>` | results as JSON - same role as Trivy's `--output` |
+| `--loglevel DEBUG` | prints the actual HTTP requests, so I can see which services it contacts |
+| `--error-on-warnings` | turns a finding into a non-zero exit code |
+
+### What I ran
+
+```bash
+cd "$REPO/services/python"
+DPFX="$OUT/python_depgate"
+
+"$DEPGATE" scan -t pypi -d . -a compare \
+  -o "${DPFX}_compare.json" --loglevel DEBUG 2>&1 | tee "${DPFX}_log.txt"
+echo "depgate scan 1 exit code: ${PIPESTATUS[0]}" | tee -a "${DPFX}_log.txt"
+
+"$DEPGATE" scan -t pypi -d . -a heur --error-on-warnings \
+  -o "${DPFX}_heur.json" --loglevel DEBUG 2>&1 | tee -a "${DPFX}_log.txt"
+echo "depgate scan 2 exit code: ${PIPESTATUS[0]}" | tee -a "${DPFX}_log.txt"
+```
+
+Each scan must be pasted **together with its `echo`**: `PIPESTATUS` is overwritten by the very next
+command. I ran one of them separately by mistake and got `exit: 127` ("command not found") although
+the scan had worked perfectly - the `echo` had reported some other command's status. In the pipeline
+this cannot happen because the `echo` is on the next line.
+
+### Observations
+
+**(a) Which input it used:**
+
+```
+discovered_files ecosystem=pypi manifests=['.\pyproject.toml'] lockfiles=[]
+selection manifest=.\pyproject.toml lockfile=None rationale=no lockfile
+```
+
+`lockfiles=[]` - the two `pylock.test*.toml` files are in the same folder and DepGate does not
+recognise PEP 751 lock files at all. In this run it read the **declared** manifest, not the
+resolution record. (Trivy did the opposite: only the lock files, never `pyproject.toml` on its own.)
+
+**(b) Which services it contacted** (counted from the DEBUG log):
+
+```
+24  https://pypi.org
+12  https://api.github.com
+ 9  https://pypistats.org
+ 6  https://api.deps.dev
+```
+
+`localhost`, `pip.ini` and `nexus` appear **0 times**. DepGate never looks at my registry
+configuration. Nexus was down the whole time and it did not care.
+
+Two of those services (`pypistats.org`, `api.deps.dev`) are not mentioned in the README. Note also
+that running DepGate sends my **internal package names** to four third-party services, and that
+`[WARNING] pypistats fetch failed; skipping weekly downloads` appeared in this run - one enrichment
+source failed, so the data is assembled from whatever answers that day.
+
+**(c) `-a compare` output** - 3 packages (the direct ones only):
+
+```json
+"packageName": "xueting-thesis-event-fengfu",
+"exists": true,  "versionCount": 1,
+"resolved_version": "1.0.3",  "requested_spec": null,  "resolution_mode": "latest",
+"risk": { "hasRisk": false, "isMissing": false, "hasLowScore": null, "minVersions": null, "isNew": null }
+```
+
+- `exists: true`, `isMissing: false` - the "this name is unclaimed, an attacker could take it" signal
+  is **off**, because version 1.0.3 of these names is published on public PyPI.
+- Every heuristic field is `null`: `-a compare` does **not** evaluate the heuristics. That is what
+  `-a heur` is for.
+- Exit code **0**.
+
+**(d) `resolved_version` does not mean what the name suggests.** My `pyproject.toml` declares
+`Flask==3.1.1` and `xueting-thesis-event-fengfu==1.0.0`. DepGate reports `3.1.3` and `1.0.3`, with
+`requested_spec: null` and `resolution_mode: "latest"`. The string `1.0.0` appears **0 times** in the
+entire DEBUG log. So `resolved_version` = "the newest version on the public registry", not "the
+version this project would install". flask is the clearest case: a perfectly ordinary public package,
+declared `==3.1.1`, reported `3.1.3`.
+
+This **contradicts** what I wrote in section 6 of `docs/summary_sca_test.md`, where I said DepGate
+sees variable **B2** through `requested_spec`. In this run it did not, at either analysis level.
+
+**(e) `-a heur` output:**
+
+```
+flask                        score 0.86   hasRisk false
+xueting-thesis-event-fengfu  score 0.00   hasRisk true   hasLowScore true   minVersions true   isNew false
+```
+
+and in the log:
+
+```
+[WARNING] [ANALYSIS] .... [RISK] package scored LOW - 0.0. Mid set to 0.6)
+[WARNING] [ANALYSIS] .... [RISK] package history is SHORT. Total 1 versions committed.
+[WARNING] One or more packages have identified risks.
+[ERROR] Warnings present, exiting with non-zero status code.
+```
+
+Exit code **3**, as documented for `--error-on-warnings`.
+
+So **two** signals fired: `minVersions` (predicted - 1 published version is below the default
+threshold of 2) and `hasLowScore` (**not** predicted). `isMissing` - the dependency-confusion signal
+itself - stayed `false` throughout.
+
+**(f) What the score actually measures.** From the DEBUG breakdown:
+
+```
+weights = {repo_version_match: .43, repo_stars: .21, repo_contributors: .14,
+           repo_last_activity: .14, repo_present_in_registry: .07}
+```
+
+All five inputs are `repo_*` values fetched from the GitHub API. The chain, visible in the log:
+
+- flask: `Found explicit repository URLs in project_urls ... count=1` -> three GitHub calls
+  (`/repos/pallets/flask`, `/contributors`, `/releases`) -> all inputs filled -> 0.86
+- my packages: `Extracted fallback repository candidates ... count=0` -> **no GitHub call at all**
+  (the only GitHub calls in the whole log are flask's) -> all inputs `None`, `weights={}` -> 0.0
+
+So in this run, score 0.0 arose because **no repository URL could be found in the PyPI metadata**, not
+because anything suspicious was detected. DepGate's own documentation describes 0.0 as "high risk
+(malicious packages, missing packages, or critical issues)" - none of which applies here; the
+mechanism in my case was simply missing metadata.
+
+**How I attributed log lines to packages:** the `count=0` line does **not** name the package. But it
+sits between two lines that do - `target=https://pypi.org/pypi/xueting-thesis-event-fengfu/json`
+above it and `deps.dev enrichment start ... pkg=xueting-thesis-event-fengfu` below it. General rule
+for DEBUG logs: if a line has no identifier, look at the nearest named line above *and* below; if
+both name the same thing, the attribution is safe.
+
+The wording difference is also visible: flask gets *"Found **explicit** repository URLs"* and
+*"Extracted repository candidates **with docs**"*, my packages get *"Extracted **fallback** repository
+candidates"* with `count=0`.
+
+**(g) `repo_version_match` is the interesting one of the five**: it asks whether the version published
+on PyPI corresponds to a tag or release in the source repository the package claims to come from. A
+package that claims a source repo but publishes a version that exists in no release is a classic sign
+that the artifact was not built from that source.
+
+**(h) Structural note:** this scoring cannot work for internal packages at all - a private company
+package has no public GitHub repository, so it has no `project_urls` entry, so it scores 0.0. Whether
+that makes the warning useful or not in my matrix is a question for the pilot data.
+
+
+## 7. super-confused - what I ran and what I found in the source
+
+```bash
+cd "$REPO/services/python"
+SPFX="$OUT/python_superconfused"
+echo "scan 1: pyproject.toml" | tee "${SPFX}_log.txt"
+"$SC" --json pyproject.toml 2>> "${SPFX}_log.txt" | tee "${SPFX}.json"
+echo "scan 1 exit code: ${PIPESTATUS[0]}" | tee -a "${SPFX}_log.txt"
+```
+
+**Why `2>>` and never `2>&1`**: super-confused writes its **result to stdout** (it has no `-o` flag),
+unlike Trivy and DepGate which write to a file. `2>&1` would mix error text into the JSON stream and
+corrupt the file.
+
+### Observations
+
+**(a) `--json` suppresses every error message.** Source lines 1009-1024:
+
+```js
+if (!fs.existsSync(targetPath)) {
+    if (!jsonMode) { console.error(`Path does not exist: ${targetPath}`); }
+    process.exit(1);
+}
+...
+catch (error) {
+    if (!jsonMode) { console.error(`Scan failed: ${error.message}`); }
+    process.exit(1);
+}
+```
+
+My first run gave `exit code: 1` with a **completely empty** log, because the working directory was
+not `services/python` and `pyproject.toml` did not exist there. The `2>>` redirect was correct -
+there was simply nothing written to stderr. Running the same command **without `--json`** immediately
+printed the human-readable result, so that is the way to diagnose it:
+
+```
+$ "$SC" pyproject.toml
+Scanning pyproject.toml for dependency confusion opportunities...
+No Dependency Confusion Opportunities found.
+```
+
+**(b) The result file is 0 bytes when nothing is found** - in `--json` mode it prints nothing at all,
+not `[]`, not `{}` (already known from the 12.10 source reading, now confirmed in practice). That is
+why the step ends with `ls -l`: the file **size** is the evidence.
+
+**(c) The positive control did not fire.** `python_superconfused_positive_control.json` was also
+**0 bytes**, although `xueting-thesis-not-published` returns **404** on PyPI (checked directly).
+
+**(d) Why: there is a name filter before any registry call.** `super-confused.js:768`:
+
+```js
+isPotentiallyVulnerable(packageName) {
+    const suspiciousPatterns = [
+        /^[a-z0-9]+[-_][a-z0-9]+$/i,          // exactly one hyphen: "word-word"
+        /^[a-z0-9]{3,8}$/i,                    // short, no hyphens
+        /^(lib|utils?|helper|common|core|base|tools?|sdk)$/i,
+        /^(test|demo|example|sample)[-_]?/i,   // must START with these
+        /^[a-z0-9]*[-_]?(test|demo|example|sample)$/i,   // must END with these
+        /^[0-9]+[a-z]+[-_]?[a-z0-9]*$/i,       // starts with digits
+    ];
+    ...
+    return suspiciousPatterns.some(p => p.test(packageName)) || packageName.length <= 4;
+}
+```
+
+It is called from every parser (`scanPackageJson`, `scanPyprojectToml`, `scanPomXml`, ...) **before**
+`checkPyPiPackageExists` / `checkNpmPackageExists`. A name that does not match is never looked up.
+
+`xueting-thesis-not-published` has **three hyphens**, so pattern 1 (which allows exactly one) does not
+match, it does not start or end with test/demo/example/sample, does not start with a digit, and is 28
+characters long. It matches nothing -> never checked.
+
+**(e) Experiment that isolates the cause.** One file, two dependency names, **both 404 on PyPI**, the
+only difference being their shape:
+
+```bash
+mkdir -p "$SCA/sc_control2" && cd "$SCA/sc_control2"
+# pyproject.toml with dependencies:
+#   "xueting-notpublished==1.0.0"            -> 1 hyphen  -> passes the filter
+#   "xueting-thesis-not-published==1.0.0"    -> 3 hyphens -> fails the filter
+"$SC" pyproject.toml
+```
+
+Result:
+
+```
+DEPENDENCY CONFUSION OPPORTUNITY!
+xueting-notpublished (pypi) in pyproject.toml
+Version: ==1.0.0
+```
+
+Only the one-hyphen name was reported. So the silence on my packages is caused by the **name-shape
+filter**, not by the registry.
+
+The same filter applies to all three ecosystems (it is shared by all parsers), and all my internal
+names have three hyphens: `xueting-thesis-event-fengfu`, `xueting-thesis-service-zhuanfa`,
+`xueting-thesis-event-jianding`, `xueting-thesis-service-fasong`, `xueting-thesis-event-juhe`,
+`xueting-thesis-result-fanhui`.
+
+**(f) Consequence for the pilot:** my current positive control name cannot fire, so a 0-byte result
+file would be uninterpretable. The control name has to be changed **before** the pilot (section 10).
+This is **not** an HR1 failure - the tool installs, runs, parses `pyproject.toml` and exits cleanly.
+
+
+## 8. DepCheck - local run only
+
+```bash
+cd "$REPO/services/python"
+python -I -X utf8 "$SCA/depcheck/depcheck.py" pyproject.toml --no-banner \
+  --export "$OUT/python_depcheck.json" 2>&1 | tee "$OUT/python_depcheck_log.txt"
+echo "depcheck exit code: ${PIPESTATUS[0]}" | tee -a "$OUT/python_depcheck_log.txt"
+```
+
+**`-X utf8` was needed on Windows.** The first attempt crashed with `UnicodeEncodeError` in
+`cp1252.py` while drawing its progress bar (it uses block characters); through a pipe on Windows,
+Python falls back to the legacy cp1252 encoding. `PYTHONIOENCODING=utf-8` would **not** help, because
+`-I` implies `-E`, which makes Python ignore all `PYTHON*` environment variables - so it has to be
+the command-line option `-X utf8`. This is a Windows-local artifact; the Ubuntu container runs in a
+UTF-8 locale.
+
+### What I read in the source
+
+- 19 parsers (`PARSERS` dict): `package_json`, `package_lock_json`, `yarn_lock`, `pnpm_lock`,
+  `requirements_txt`, `pipfile`, `pipfile_lock`, `pyproject_toml`, `composer_json`, `composer_lock`,
+  `gemfile`, `gemfile_lock`, `pom_xml`, `build_gradle`, `go_mod`, `cargo_toml`, `cargo_lock`,
+  `nuget_packages_config`, `csproj`.
+- `check_package()` queries the registry for **every** parsed name - there is **no name-shape filter**.
+- Directory mode excludes `node_modules`, `.git`, `__pycache__`, `vendor`, `.venv`, `venv` - but
+  **not** `target`, `build` or `py_dependency`.
+- `--export` is called inside `process_file`, i.e. once per manifest, so in directory mode with
+  several manifests each call overwrites the same file and only the last one survives. Therefore:
+  pass an explicit file.
+- Exit code is meaningful: `sys.exit(1 if any_vulns else 0)`.
+
+### Output on services/python
+
+```
+  Total:      3
+  Safe:       3
+  Vulnerable: 0
+
+  [OK] All 3 packages exist on the public pip registry.
+  No dependency confusion vulnerability found.
+```
+
+```json
+{ "vulnerable": [], "safe_count": 3, "error_count": 0, "errors": [] }
+```
+
+- The exported JSON in the clean case contains **no package names at all**, only a count. So for this
+  tool the console log is the only record of *which* packages were checked.
+
+### Output on the two-name control file
+
+```
+  [!] xueting-notpublished - NOT FOUND on pip
+  [!] xueting-thesis-not-published - NOT FOUND on pip
+  Safe: 0   Vulnerable: 2
+
+  An attacker can register these on the public pip registry
+  with a higher version -> Remote Code Execution!
+```
+
+```json
+"vulnerable": [ { "name": "xueting-notpublished", "version": "==1.0.0" },
+                { "name": "xueting-thesis-not-published", "version": "==1.0.0" } ]
+```
+
+### Observations
+
+- **Both** names were flagged, where super-confused flagged only one. Same file, same two names, same
+  registry - a measured difference between two tools that advertise the same check, with the
+  mechanism known from both sources.
+- Even on a **populated** result the JSON has `name` and `version` only - **no URL field anywhere in
+  the schema**.
+- The two messages from the same tool on the same project, ten minutes apart, are worth quoting
+  verbatim side by side:
+  - name **published** on public PyPI -> `[OK] ... No dependency confusion vulnerability found.`
+  - name **not published** -> `An attacker can register these ... -> Remote Code Execution!`
+
+  The wording is **future tense** ("an attacker *can*"), i.e. the tool reports an *opportunity*, not
+  an event. This is the clearest illustration so far of the precondition argument from 12.10 - and it
+  comes from my own run rather than from a README.
+- Maintenance picture for the screening table, with today's date: 1 star, no LICENSE file, no releases
+  or tags (pinnable only by commit SHA), last push 2026-02-19.
+- **Decision deferred:** whether DepCheck should become a fourth measured tool is left until after
+  Thursday's supervisor meeting. Nothing in the runner image or the pipelines was changed for it.
+
+
+## 9. Changes made to the pipelines today
+
+1. **`pip freeze` -> `pip show depgate`** in all three workflows (line 287 python, 293 nodejs and
+   java). The full freeze was more than I need as a version record for the tool itself.
+2. **`service-ci-python.yml`: the Trivy step now has 4 scans instead of 3**, and `--scanners vuln` was
+   added to the CycloneDX scan:
+
+   | scan | what varies | format | file |
+   |---|---|---|---|
+   | 1 | - | json | `_trivy_declared.json` |
+   | 2 | format only | cyclonedx | `_trivy_declared_cdx.json` |
+   | 3 | format only | spdx-json | `_trivy_declared_spdx.json` |
+   | 4 | **scope**: no `--skip-dirs` | json | `_trivy_all.json` |
+
+   Reason for adding `--scanners vuln` to scan 2: previously scan 1 and scan 2 differed in **two**
+   things (format *and* whether vulnerability scanning ran), so a difference between the files could
+   not be attributed to either. Now scans 1-3 differ in exactly **one** variable, the output format,
+   and scan 4 differs from scan 1 in exactly one variable, the directory scope.
+
+   Reason for adding SPDX: it has a dedicated `downloadLocation` field, which CycloneDX does not, so
+   it is a second independent place where an origin URL could appear.
+3. **The `echo` descriptions were reformulated** to say scope and format explicitly, instead of
+   "declared only, json".
+4. **The upload list** of the python workflow gained `..._trivy_declared_spdx.json`.
+
+The nodejs and java workflows still have the old 3-scan Trivy block - they are only changed after the
+python pilot shows whether SPDX and scan 4 are worth keeping.
+
+
+## 10. Open points carried into tomorrow's pilot
+
+- [ ] **Fix the quoting error on line 268 of `service-ci-python.yml`** (found while writing this
+      entry): the scan 3 `echo` is missing its opening double quote -
+      `echo scan 3: ... spdx-json" | tee -a "..."`. The quotes are unbalanced, so bash does not see
+      the line as intended. Must be fixed before the pilot runs.
+- [ ] **Change the super-confused positive-control name in all three workflows.**
+      `xueting-thesis-not-published` cannot pass the name filter, so it can never fire, and a 0-byte
+      result file would be uninterpretable. `xueting-notpublished` passes the filter and is 404 on
+      PyPI (npm side still to be verified with `npm view xueting-notpublished`).
+      Idea: put **both** names in each control file, so every cell's artifact proves two things by
+      itself - the tool ran and can report, and my naming convention is excluded by the filter.
+- [ ] **`service-ci-java.yml`: the positive control is written but never scanned.** The step creates
+      `/tmp/sc_control/pom.xml` with a heredoc and then jumps straight to
+      `echo "positive control exit code: ${PIPESTATUS[0]}"` - `super-confused` is never invoked on it,
+      so that exit code belongs to the preceding command, and the file requested by the upload list
+      can never exist.
+- [ ] **Scan 4 check in cell `pip_A1a_B1a_B2b_C1b`:** compare `_trivy_declared.json` with
+      `_trivy_all.json`. If `_all.json` has an extra `Results` entry under `py_dependency/`, scan 4
+      earns its place; if the two files are identical apart from `ReportID`/`CreatedAt`, scan 4
+      produces nothing and should be reconsidered. The local `.venv` observation (i) cannot decide
+      this.
+- [ ] **Correct section 6 of `docs/summary_sca_test.md`:** the claim that DepGate sees variable B2
+      through `requested_spec` is contradicted by today's run; and super-confused's "name-existence
+      primitive" description has to be extended with the name-shape pre-filter.
+- [ ] **npm cell:** DepGate prefers `package-lock.json` over `package.json`, so npm may be the one
+      ecosystem where its input differs between cells - worth watching in pilot cell 2.
+- [ ] Record the local Trivy DB date next to the image's (11.10) whenever local output is cited, so
+      local and CI results are never mixed.
