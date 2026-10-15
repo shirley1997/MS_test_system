@@ -348,7 +348,7 @@ def start_runner_container (cell_id, token, repo_url, image_tag) -> str:
 #  the later gh run watch step (obeserve workflow run) has no timeout of its own and would hang forever
 # waiting for a runner that never shows up. 
 # This function is what catches that within a defined time interval so the pipeline can move on to the next cell.
-def wait_for_runner_online(owner, repo, expected_runner_name, timeout_s=60, check_interval_s=5) -> bool:
+def wait_for_runner_online(owner, repo, expected_runner_name, timeout_s=90, check_interval_s=5) -> bool:
     current_time = 0
     while current_time <= timeout_s:
         runner_info = subprocess.run(
@@ -506,7 +506,7 @@ def run_one_cell(cell, owner, repo, repo_url, image_tag, checkpoint_path, result
         container_id = start_runner_container(cell["cell_id"], token, repo_url, image_tag)
         print("runner container just created:", container_id)
 
-        runner_online = wait_for_runner_online(owner, repo, f"thesis-runner-{cell["cell_id"]}", timeout_s=60, check_interval_s=5)
+        runner_online = wait_for_runner_online(owner, repo, f"thesis-runner-{cell["cell_id"]}", timeout_s=90, check_interval_s=5)
         print("is the new created runner online now?:", runner_online)   # should be True within a few seconds
 
         if stop_requested:
