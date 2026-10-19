@@ -277,7 +277,7 @@ jobs:
             2>&1 | tee -a "${trivy_write_file}_log.txt"
           echo "scan 4 trivy exit code: ${PIPESTATUS[0]}" | tee -a "${trivy_write_file}_log.txt"
 
-
+          
           ls -l ${trivy_write_file}_* | tee -a "${trivy_write_file}_log.txt"
 
 
