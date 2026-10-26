@@ -6950,3 +6950,237 @@ check file automation_process/central_automated_pipeline/results_diff.csv for di
   reports status `online`, and only then is the workflow dispatched.
 - The timeout was raised from **60 s to 90 s** 
 - After this change the cell was dispatched again and **worked**. 
+
+
+# 25.10.2026 - pipeline review: 4 Maven cells (B1d × B2a × C1b) kept the cached 1.0.0, but are labelled resolution_error
+
+**Stand:** I reviewed the three service pipelines (`.github/workflows/service-ci-*.yml`) and the classifier
+(`classify_logic()` in `central_automated_pipeline.py`) against the evidence files of the final run
+(`automation_process/central_automated_pipeline/artifact_download/`, identical to `sub-RQ1_result/0809`).
+The classifier is correct. But **4 Maven cells** have a label that does not describe what really happened.
+
+## 1. What I checked
+
+- All 99 `resolution_error` cells: **95 have no evidence file at all** (real failure). Only **4** have one.
+- Every `malicious_resolved` and `private_resolved` cell has a real version **and** a real source URL.
+- -> **npm and pip have no wrongly labelled cell.** Only these 4 Maven cells are special.
+
+## 2. The 4 maven cells
+
+- `mvn_A1a_B1d_B2a_C1b`, `mvn_A1b_B1d_B2a_C1b`, `mvn_A2_B1d_B2a_C1b`, `mvn_A3_B1d_B2a_C1b`
+  = Maven cells, default configuration (B1d, only Maven Central), pinned 1.0.0 (B2a), package update (C1b).
+- Phase-2 log: `BUILD SUCCESS`. The lockfile contains **1.0.0** for both internal packages.
+- But the `resolved` URL is **empty** (log: `Artifact resolved url ... not found`).
+- Classifier logic in central automation pipeline: no package origin URL -> origin is not hosted / group -> **resolution_error**.
+- Reality: the build succeeded and used the internal package with version 1.0.0 -> the attack **failed**. The label `resolution_error`
+  ("build failed / output incomplete") does not fit well. The logic is not wrong - it simply has no class for
+  "kept from the local installation", because I did not expect this case.
+
+## 3. Why it happened
+
+- **My design:** phase 1 of C1b uses fixed setup files in all ecosystems. The goal: version 1.0.0 is installed,
+  no matter from where, as the starting point for the update.
+- For Maven, phase 1 replaces the cell's `pom.xml` with `fixed_setup_file/fixed_pom.xml`. This file has
+  **one repository with id `central`**, pointing to `maven-group-public-first` (the A1a group) - for every cell.
+  - setup log: `Downloaded from central: .../maven-group-public-first/.../xueting-thesis-event-juhe-1.0.0.pom`
+  - -> 1.0.0 is now in the local repository `~/.m2`.
+- **Maven behavior:** Maven always looks in `~/.m2` (local repository) first. For a fixed release version (1.0.0) it only downloads from remote repository
+  if the package is missing.
+- Maven also remembers **which repository** a cached package came from, and reuses it only if that repository is
+  configured in the current build (Maven 3 compatibility notes, "Resolution from Local Repository").
+- In **Maven 3.9** (runner uses 3.9.16) this is tracked **by repository id only** - the Maven Resolver docs call it
+  the "impostor problem": two repositories with the same id but different URLs are treated as the same.
+- **Phase 2 under default configuration B1d:** Maven Central also has the id `central` -> Maven thinks the cached 1.0.0 came from a
+  configured repository -> **no download**, use the cache -> `BUILD SUCCESS`.
+- The `maven-lockfile` plugin computes `resolved` by checking the configured remote repositories. Maven Central
+  has no 1.0.0 -> the URL stays **empty**.
+- **So the cause = my setup (id `central` in the fixed pom) + documented Maven behavior.** It is not a general rule
+  "Maven keeps the installed version". With a different id, Maven would reject the cached copy, and try to connect Maven Central,
+  fail -> a real `resolution_error`, like npm.
+
+### Maven behavior: search Local repository first - for pinned versions and for version ranges
+
+The local repository comes first in **both** cases. The difference is what Maven needs before it can decide.
+
+**What the official documentation says:**
+- Repositories guide: the local repository "caches remote downloads", and "Downloading in Maven is triggered by a
+  project declaring a dependency that is **not present in the local repository**".
+- POM reference, version ranges: "Maven picks the **highest version** ... that satisfies all the hard requirements."
+- POM reference, `updatePolicy`: "how often Maven tries to update its local repository from the remote repositories
+  ... compare ... **maven-metadata** ... to the remote. ... `daily` (default) ... `never` (only downloads if not yet
+  existing in the local repository). ... this affects **both artifacts and metadata**."
+
+**What this means:**
+
+| | pinned `1.0.0` | range `[1.0.0,2.0.0)` |
+|---|---|---|
+| Step 1: which version? | already known: 1.0.0 | Maven needs the **list of versions** (`maven-metadata.xml`). It refreshes this list from the remote repositories according to `updatePolicy` (once a day by default; **every time with `-U`**, which my phase 2 uses) |
+| Step 2: the file of that version | **local first**, download only if missing | **local first**, download only if missing |
+
+- "Local first" is true for the **files** in both cases. With a range, Maven additionally refreshes the **version list**
+  from the remote repositories, and only that list can reveal 1.0.3.
+- My own evidence (meeting notes 22.09, `mvn_A2_B1a_B2b_C1b`): in phase 2, Maven first downloads `maven-metadata.xml`
+  from the hosted repository, then the `1.0.2.pom`. `maven-metadata.xml` appears only in phase 2, because the pinned
+  phase 1 asks for the file directly.
+- Wording for the thesis: "Maven always looks in the local repository first. For a fixed version it only needs the
+  file, so a cached 1.0.0 is used directly. For a version range it first refreshes the version list from the remote
+  repositories (forced by `-U`), picks the highest matching version, and then takes that file from the local
+  repository or downloads it."
+
+**Sources:**
+- [Maven - Introduction to Repositories](https://maven.apache.org/guides/introduction/introduction-to-repositories.html)
+- [Maven - POM Reference (version requirements, updatePolicy)](https://maven.apache.org/pom.html)
+
+
+## 4. Why npm and pip do not have this
+
+- **npm:**(cells are pinned (B2a)) phase 1 only copies a fixed lockfile - nothing is installed, and the npm cache is cleaned.
+  `npm update` always asks the configured registry which versions exist. Under B1d that is npmjs, which only has 1.0.3, and the version is pinned to 1.0.0 -> `ETARGET` -> lockfile removed -> a real `resolution_error`.
+- **pip:** phase 1 already uses the cell's own `pip.conf`. Under B1d that is only PyPI, which has no 1.0.0
+  -> phase 1 fails -> phase 2 is skipped (= exception 2 of my rule).
+  In addition, `--target` makes pip ignore already installed packages **(this is a problem i need to fix)** (pip source, `commands/install.py`:
+  `if options.target_dir: options.ignore_installed = True`), so pip always resolves fresh from the index.
+- npm pinned C1b cells (B1a × B2a): npm says `up to date`, so the lockfile keeps the URL from my fixed setup
+  lockfile -> `private_resolved`. This matches my design (installed 1.0.0 is kept), and npm did ask the cell's
+  registry -> correct label.
+
+### Why npm does not take a cached 1.0.0 like Maven
+
+npm has **no cached 1.0.0**, and `npm update` does not decide from local files anyway - two differences to Maven:
+
+| | Maven (phase 2) | npm (phase 2) |
+|---|---|---|
+| What phase 1 left behind | the real 1.0.0 **files** in `~/.m2` (downloaded in phase 1) | only a **copied lockfile** - text saying "1.0.0, from this URL". No package files: `--package-lock-only` downloads nothing, and the npm cache was cleaned |
+| How phase 2 decides | for a fixed version: "is the file already in my local repository?" -> yes -> use it, no registry asked | `npm update <the 2 packages>` asks the **configured registry** for the list of versions, then picks the highest one that matches `package.json` |
+| Under B1d (npmjs / Maven Central only) | the cached copy counts as available (same id `central`) -> `BUILD SUCCESS` | npmjs lists only 1.0.3; pinned `1.0.0` matches nothing -> `ETARGET` |
+
+- The key point: **"update" means something different.**
+  - npm **always re-checks the registry** for the packages I name - that is the purpose of `npm update`. So the
+    registry configuration decides the result.
+  - Maven only re-checks the registry if the file is **missing locally** (`-U` only forces re-checking version lists
+    and snapshots, not an already downloaded fixed release version).
+- Evidence that npm really asks the registry, from my other pinned C1b cells:
+  - B1a with A2/A3: npm asked the hosted repository, found 1.0.0 -> `up to date` -> `private_resolved`.
+  - B1d: the same command fails, because npmjs has no 1.0.0.
+
+### pip C1b: `--target` makes pip ignore the installed 1.0.0 - finding and what to change
+
+**My intention for C1b (package update):** like a developer - 1. version 1.0.0 is installed in the project,
+2. the developer runs the update command, 3. I observe what the package manager really does.
+
+**What the pipeline does now (`service-ci-python.yml`, C1b step):**
+- Phase 1: `pip install --target ./py_dependency --report <cell>_setup-install-report.json .` (fixed pyproject, 1.0.0)
+- Phase 2: `pip install --dry-run --target ./py_dependency --upgrade <2 internal packages> --report <cell>_install-report.json .`
+
+**Finding:**
+- `--target` makes pip's resolver **ignore already installed packages**. pip source
+  (`pip/_internal/commands/install.py`, line 414, pip 26.2.1): `if options.target_dir: options.ignore_installed = True`.
+- The pip documentation does **not** say this. It only describes the file side of `--target`: "Install packages into
+  <dir>. By default this will not replace existing files/folders in <dir>. Use --upgrade to replace existing packages
+  in <dir> with new versions." (https://pip.pypa.io/en/stable/cli/pip_install/) -> documentation ≠ behaviour.
+- -> In phase 2, pip does **not know** that 1.0.0 is installed in `py_dependency`. It resolves as if nothing were
+  installed. This explains why all 27 pip C1b cells with evidence are identical to C1a.
+- Phase 1 with `--target` is correct (it only installs 1.0.0 into the directory). Only phase 2 is the problem.
+
+**Local test (pip 26.2.1, package `six`, 1.16.0 installed into `py_dependency` with `--target`, dry-run only):**
+
+| phase 2 command | pinned `==1.16.0`, index **without** 1.16.0 (`--no-index`) | range `>=1.16`, real index |
+|---|---|---|
+| `--target py_dependency --upgrade` (current pipeline) | `No matching distribution found` -> installed copy ignored | `Would install six-1.17.0` |
+| `PYTHONPATH=py_dependency`, **no** `--target` | `Requirement already satisfied: six==1.16.0 in ...\py_dependency` -> installed copy seen | `Would install six-1.17.0` -> real update |
+
+- Removing `--target` alone is not enough: pip then only looks in the runner's own site-packages, where 1.0.0 is not.
+  `PYTHONPATH=./py_dependency` is needed so pip finds the installed packages.
+
+**Check of my earlier log (15.07 design + "Checked, but decided NOT to change: missing PYTHONPATH"):**
+- The 15.07 design was `--target ./deps --upgrade` **plus** `PYTHONPATH=./deps`. That could not have worked: as long as
+  `--target` is in the command, pip ignores installed packages, so `PYTHONPATH` has no effect.
+- The pilot then compared `A1a×B1a×B2b` C1a vs C1b (both 1.0.3) -> "no change needed". But a **range** cell gives 1.0.3
+  in both cases anyway; the difference can only show with a **pinned** version and an index without a matching version.
+
+**Effect on my current results: none expected.**
+- The installed version only matters if the index has **no** matching version, but the installed one matches.
+- Phase 1 and phase 2 use the **same `pip.conf`**. If phase 1 could install 1.0.0, that index still has 1.0.0 in phase 2.
+
+| cell type | real update (pip sees 1.0.0) | current pipeline (pip ignores 1.0.0) | same? |
+|---|---|---|---|
+| pinned `==1.0.0` | keeps 1.0.0 ("already satisfied") | takes 1.0.0 from the same index | yes |
+| range / unspecified, public registry reachable | updates to 1.0.3 | takes 1.0.3 | yes |
+| phase 1 failed (B1d, A2/A3 × B1a) | no installed state, update skipped | update skipped | yes |
+
+**Alternative checked: virtual environment.** pip would also see the installed 1.0.0 -> the same classifier extension
+is needed. The runner Dockerfile needs no change (CPython built with `--with-ensurepip=install`, line 86), but a new venv
+brings the pip version bundled with Python 3.12.4, not 26.2.1. -> `PYTHONPATH` is simpler. I do not want a venv.
+
+**Decision: implement the real update flow (after the middle presentation, 27.10.2026).**
+
+**What to change in the code:**
+1. `service-ci-python.yml`, C1b phase 2: remove `--target ./py_dependency`, add `PYTHONPATH=./py_dependency`
+   (env of the command). Keep `--dry-run`, `--upgrade`, `--report`. Do **not** add `--ignore-installed`.
+   Phase 1 stays unchanged.
+2. `service-ci-python.yml`, upload step: add `services/python/<cell>_setup-install-report.json` to the artifact paths.
+   It is created in phase 1 (line 171) but **not uploaded** now (upload list lines 356-363).
+3. `central_automated_pipeline.py`, `read_pip_evidence()` (C1b only): in pinned cells pip says "Requirement already
+   satisfied" and does **not** list the internal packages in `--report`. Rule: if an internal package is missing in the
+   phase-2 report **and** the phase-2 log says `Requirement already satisfied: <package>`, take its version + URL from
+   the phase-1 report `<cell>_setup-install-report.json`. (Same idea as npm: a kept package keeps its URL from the
+   setup file.) Without this, the pinned pip C1b cells would become `resolution_error`.
+4. Keep sub-RQ1 reproducible: keep the current `results.csv` and artifacts; write the new run to a separate result file.
+
+**How to verify (goal: 0 differences):**
+1. Re-run only the 36 pip C1b cells with the new pipeline.
+2. Compare the resolved **versions** of the internal packages with the current run (log / report) - no classifier needed.
+3. Re-classify all 432 cells offline with the extended classifier from the saved evidence files and compare with
+   `results.csv`.
+4. Expected: same labels everywhere. If not, the difference itself is a finding and must be analysed.
+
+**What to change in the master thesis:**
+- Methodology / implementation (C1b, pip): describe phase 2 with `PYTHONPATH=./py_dependency` (pip sees the installed
+  1.0.0, like a real developer update); phase 1 with `--target`.
+- Classification: state that a package kept from the installed state takes its evidence from the setup phase (pip and
+  npm).
+- Results: if the re-run shows 0 differences, write "verified with a real update from the installed state".
+- Remove my old 15.07 statement that `PYTHONPATH` was not needed (wrong reasoning, see above).
+
+**C1c (rebuild from lockfile) checked at the same time: correct, no change needed.**
+- Phase 1: `pip lock --only-deps --output pylock.<cell>.toml .` with the cell's `pip.conf` (log shows the cell's indexes).
+- Phase 2: `pip install --dry-run --ignore-installed -r pylock.<cell>.toml --report ...` - pip really installs from
+  the lockfile (log: `Using pylock.toml as a requirements source`, collects exactly the locked versions; report URLs
+  = lockfile URLs in 35 of 35 cells). `--ignore-installed` is right here: a CI rebuild starts from a clean environment.
+
+## 5. What changes and what does not
+
+- **Unchanged:** 190 `malicious_resolved`, pinning never bypassed, the two-condition rule (these 4 cells are pinned,
+  the rule predicts "not attacked" -> correct), A1a ≡ A1b, C1a ≡ C1c, B1b ≡ B1c, system level 90 %.
+- **Changes only if I relabel the 4 cells:**
+  - private 71 -> 75, resolution_error 99 -> 95
+  - B1d: 0 -> 4 of 96 cells keep the internal package (still **none from Nexus**)
+  - pair checks Maven: B1b vs B1d 12 -> 16 of 24 same, B1c vs B1d 9 -> 12 of 18 same (every "holds?" stays the same)
+  - cross-ecosystem: agree 96 -> 92, disagree 39 -> 43
+  - heatmap: 4 Maven cells E -> P*
+
+## 6. Possible solutions (decision open, asked on the "Open Questions" slide)
+
+- **Option A - keep `resolution_error` + explanation.** No change to the data; one footnote / sentence in the analysis.
+- **Option B - rule-based sub-class `private_resolved (local)`.**
+  - Rule: build succeeded + evidence file exists + both internal packages at 1.0.0 / 1.0.2 + no remote URL.
+  - Applied to all 360 cells, it matches **exactly these 4** -> the rule chooses the cells, not me (defensible).
+  - Keep the original `results.csv`, report numbers before and after (sensitivity analysis), and describe how it
+    was found (evidence audit after the experiment) in threats to validity.
+- **Option C - change the id in the fixed pom and re-run the 4 cells.** Then Maven behaves like npm
+  (real failure), but this changes my "install 1.0.0 from anywhere" design for Maven only.
+- For the middle presentation: keep the current numbers, add a footnote on the heatmap slide, ask supervisor.
+
+## 7. Other points from the same review (no wrong label)
+
+- C1c evidence is identical to C1a in all ecosystems **by construction**: the lockfile is created in the same run,
+  after the attacker published, so it already contains the attacker's version -> explains C1a ≡ C1c.
+  A lockfile created *before* the attack is not tested.
+- pip C1b phase 2 is effectively a fresh install (`--target`, see above) -> limitation.
+- `.npmrc` is missing in the npm artifacts (`upload-artifact` skips hidden files) -> config evidence incomplete.
+- Java pipeline: the super-confused positive control never runs (only sub-RQ2, no effect on sub-RQ1).
+
+**Sources:**
+- [Maven 3.x Compatibility Notes - Resolution from Local Repository](https://cwiki.apache.org/confluence/display/MAVEN/Maven+3.x+Compatibility+Notes)
+- [Maven Resolver - EnhancedLocalRepositoryManagerFactory (Javadoc, "impostor" problem)](https://maven.apache.org/resolver/maven-resolver-impl/apidocs/org/eclipse/aether/internal/impl/EnhancedLocalRepositoryManagerFactory.html)
+- [Maven Resolver - Local Repository](https://maven.apache.org/resolver/local-repository.html)
