@@ -7063,6 +7063,52 @@ npm has **no cached 1.0.0**, and `npm update` does not decide from local files a
   - B1a with A2/A3: npm asked the hosted repository, found 1.0.0 -> `up to date` -> `private_resolved`.
   - B1d: the same command fails, because npmjs has no 1.0.0.
 
+### Do npm and pip also use a local cache? Yes - but it cannot cause the Maven problem
+
+**Between cells: no cache in any ecosystem.** Every cell runs in a fresh runner container, and every pipeline cleans
+its cache first: `npm cache clean --force`, `pip cache purge`, `rm -rf ~/.m2/repository`.
+
+**Inside one cell (phase 1 -> phase 2):**
+
+| | cache used in phase 2? | evidence |
+|---|---|---|
+| **pip** | **yes**, in all 27 C1b cells with evidence: `Using cached ...` for Flask etc., and in **9 pinned cells** also for the internal **1.0.0** (e.g. `pip_A1a_B1a_B2a_C1b`) | phase-2 logs |
+| **npm** | C1b: no - phase 1 only copies a lockfile and downloads nothing, so the cache is empty. C1c: possible, but the evidence is the phase-1 lockfile anyway | no cache lines in npm logs (default log level does not show them) |
+| **Maven** | yes, the internal 1.0.0 from `~/.m2` | the 4 B1d × B2a × C1b cells |
+
+**Why pip's cache cannot cause the Maven problem:**
+- pip's cache is a download cache, looked up by the **exact URL**. A cached file is only used if the **current**
+  configuration asks for that same URL.
+- In the 9 pinned cells, phase 2 asked the same Nexus index as phase 1 (log: `Looking in indexes:
+  ...pypi-group-public-first...`) -> same 1.0.0 file -> same result as a new download -> correct.
+- Maven's local repository is looked up by **repository id** -> a file from the Nexus group was accepted for
+  "Maven Central" (different URL, same id `central`).
+- Under B1d, pip would ask PyPI URLs -> cached Nexus files cannot be used (and phase 1 fails there anyway).
+- Detail from pip source (`pip/_internal/index/collector.py`, pip 26.2.1): pip forces a fresh version list from the
+  index only with the option `--refresh-package`. By default it may reuse a cached index page. Inside one cell this is
+  the same index with the same content -> no effect on my results.
+
+**Why only Maven's cached package has no origin URL:**
+
+| | where the URL in the evidence file comes from | if the file comes from the cache |
+|---|---|---|
+| **pip** (`--report`) | the download link pip picked from the **configured index** | URL known -> filled (e.g. the Nexus URL in the 9 pinned cells) |
+| **npm** (lockfile) | the registry metadata, or kept from the setup lockfile | URL known -> filled |
+| **Maven** (`maven-lockfile`) | the plugin does **not** record the real origin. It **checks afterwards** which configured remote repository has the file (HTTP HEAD request) | under B1d only Maven Central is configured, and it has no 1.0.0 -> **empty** |
+
+How pip finds a file, step by step (this is why the URL is always filled):
+1. Ask the configured index: "which files exist for this package?" -> the index answers with a list of download links,
+   e.g. `.../pypi-group-public-first/.../fengfu-1.0.0.whl`.
+2. Pick one link (the version that matches).
+3. Check the cache: "do I already have the file from exactly this link?" -> yes: use the cached copy, no: download.
+4. Write this link into the report as the URL.
+
+- The URL is decided in step 2, **before** the cache is used -> always filled.
+- Maven skips step 1 for a fixed version: it takes the file from `~/.m2` directly, and `maven-lockfile` only looks for
+  a URL afterwards.
+- In short: npm and pip record the URL they **used**. `maven-lockfile` **re-checks** the configured repositories and
+  ignores where the cached file really came from (the Nexus group).
+
 ### pip C1b: `--target` makes pip ignore the installed 1.0.0 - finding and what to change
 
 **My intention for C1b (package update):** like a developer - 1. version 1.0.0 is installed in the project,
