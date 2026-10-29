@@ -1,5 +1,5 @@
 
-# this image is used for sub-RQ2, so the SCA tools are installed inside this image: Trivy, DepGate, super-confused
+# this image is used for sub-RQ2, so the SCA tools are installed inside this image: Trivy, DepGate, DepCheck
 # GitHub Actions self-hosted runner for dependency confusion experiments
 # Base image        : Ubuntu 24.04
 # Toolchains (pinned) : Node 24.18.0, npm 11.16.0, Python 3.12.4, pip 26.2.1,
@@ -177,26 +177,39 @@ RUN curl -fsSL -o /tmp/trivy.tar.gz \
     && rm -f /tmp/trivy.tar.gz \
     && trivy --version
 
+
+# 16.10.2026: super-confused is replaced by the tool DepCheck (its name-shape filter makes the registry checks
+# the internal package names of the test application never fires, because the internal package names of this test application 
+#does not fit its name pattern)
 # install super-confused 1.2.0: a DC-specific SCA tool found on github.
 # it is a npm package with version 1.2.0, but the GitHub repo has no releases and no tags 
 # Published npm package versions are 1.0.0, 1.1.0, 1.2.0.
 
 # use npm install -g to install the binary in /usr/bin/super-confused.
 # npm cache cleaned afterwards so root's build-time cache does not stay in the image.
-ARG SUPER_CONFUSED_VERSION=1.2.0
-RUN npm install -g "super-confused@${SUPER_CONFUSED_VERSION}" \
-    && npm cache clean --force
+#ARG SUPER_CONFUSED_VERSION=1.2.0
+#RUN npm install -g "super-confused@${SUPER_CONFUSED_VERSION}" \
+#    && npm cache clean --force
 
 
 # install DepGate 0.10.0: the second DC-specific SCA tool.
 # important: the DepGate is installed into its OWN virtual environment at /opt/depgate, NOT into the experiment's
 # Python 3.12.4 site-packages. so that the experiment envrionment keep stable and untouched
 
-
 ARG DEPGATE_VERSION=0.10.0
 RUN /opt/python/${PYTHON_VERSION}/bin/python3.12 -m venv /opt/depgate \
     && /opt/depgate/bin/pip install --no-cache-dir "depgate==${DEPGATE_VERSION}" \
     && ln -s /opt/depgate/bin/depgate /usr/local/bin/depgate 
+
+
+# install DepCheck (BlackHatExploitation/depcheck): DC-specific SCA tool --> replace the tool super-confused
+# the repo has no releases and no tags -> can only be pinned by git commit SHA
+
+ARG DEPCHECK_COMMIT=3c55d2905c8f1852e98e8ba96f38fbd9a3ed91b0
+RUN mkdir -p /opt/depcheck \
+    && curl -fsSL -o /opt/depcheck/depcheck.py \
+      "https://raw.githubusercontent.com/BlackHatExploitation/depcheck/${DEPCHECK_COMMIT}/depcheck.py" \
+    && python3.12 -I /opt/depcheck/depcheck.py --version
 
 
 # set up non-root user for the runner cause GHF runner rejects to to run as root -> create user called "runner"
