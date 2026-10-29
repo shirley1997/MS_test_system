@@ -184,10 +184,13 @@ jobs:
           echo "[C1b] internal package successfully installed to ./py_dependency. now running upgrade"
 
           # Phase 2: DRY-RUN upgrade of internal packages
-          pip install --dry-run --target ./py_dependency --upgrade \
-            xueting-thesis-event-fengfu xueting-thesis-service-zhuanfa \
-            --report "${{ inputs.cell_id }}_install-report.json" \
-            . 2>&1 | tee "${{ inputs.cell_id }}_pip_log.txt" || true
+          # PYTHONPATH makes pip see the already installed packages from phase 1
+          # the option "--target" is removed, because that will let pip ignore the installed packages
+          PYTHONPATH=./py_dependency pip install --dry-run --upgrade \
+          xueting-thesis-event-fengfu xueting-thesis-service-zhuanfa \
+          --report "${{ inputs.cell_id }}_install-report.json" \
+          . 2>&1 | tee "${{ inputs.cell_id }}_pip_log.txt" || true
+
                 
 
       
@@ -361,6 +364,8 @@ jobs:
             services/python/${{ inputs.cell_id }}_pip_log.txt
             services/python/${{ inputs.cell_id }}_pip_setup_log.txt
             services/python/${{ inputs.cell_id }}_invalid.txt
+            services/python/${{ inputs.cell_id }}_setup-install-report.json
+
 
 
             services/python/${{ inputs.cell_id }}_trivy_version.json

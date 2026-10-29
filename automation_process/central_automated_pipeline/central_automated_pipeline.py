@@ -192,7 +192,12 @@ def read_npm_evidence(package_lock_path) -> list[dict]:
                 )
     return npm_package_found
 
-def read_pip_evidence(install_report_path) -> list[dict]:
+
+#  after package update, already satisfied package will not be in install-report.json
+# and in log it will show "already satisfied in..."
+# in order to avoid misclassification, as long as this text shows
+# then extract the internal package names which are already satisfied, then check in setup report to parse name, version, URL
+def read_pip_evidence(install_report_path, setup_report_path, log_path) -> list[dict]:
     try:
         with open(install_report_path, 'r', encoding='utf-8') as json_File:
             install_report_data = json.load(json_File)   
@@ -200,10 +205,30 @@ def read_pip_evidence(install_report_path) -> list[dict]:
         print(e)
         return None
 
+    # 2. read the phase-2 log as a long text (empty text if the file does not exist)
+    try:
+        with open(log_path, 'r', encoding='utf-8') as log_file:
+            log_text = log_file.read()
+    except Exception as e:
+        print(e)
+        log_text = ""
+
+    # 3. read the setup report of phase 1 (empty list if the file does not exist, e.g. in C1a / C1c)
+    try:
+        with open(setup_report_path, 'r', encoding='utf-8') as json_File:
+            setup_report_data = json.load(json_File)
+        setup_package_area = setup_report_data["install"]
+    except Exception as e:
+        print(e)
+        setup_package_area = []
+
     pip_package_found = []     # create an empty list
     package_area = install_report_data["install"]   # "install" is a list
 
     for pip_package_name in internal_packages["python"]:
+        found = False   # initial the boolean variable
+
+        # 4. look for the package in the phase-2 install-report 
         for item in package_area:
             if item["metadata"].get("name") == pip_package_name:
                 pip_package_found.append(
@@ -211,6 +236,18 @@ def read_pip_evidence(install_report_path) -> list[dict]:
                         "version": item["metadata"].get("version"),
                         "url": item["download_info"].get("url"),}
                 )
+                found = True
+
+        # 5. IMPORTANT: if internal package is not in the phase-2 report, but the log says "already satisfied in..." --> pip kept the installed package"
+        # then take package name, version and URL from the setup report of phase 1
+        if found == False and ("Requirement already satisfied: " + pip_package_name) in log_text:
+            for item in setup_package_area:
+                if item["metadata"].get("name") == pip_package_name:
+                    pip_package_found.append(
+                        {   "name": pip_package_name,
+                            "version": item["metadata"].get("version"),
+                            "url": item["download_info"].get("url"),}
+                    )
     return pip_package_found
 
 def read_java_evidence(java_cell, base_dir) -> list[dict]:
@@ -540,7 +577,9 @@ def run_one_cell(cell, owner, repo, repo_url, image_tag, checkpoint_path, result
         if (cell["ecosystem"] == "nodejs"):
             package_evidence = read_npm_evidence(f"{dest_dir}/package-lock.json")
         elif (cell["ecosystem"] == "python"):
-            package_evidence = read_pip_evidence(f"{dest_dir}/{cell['cell_id']}_install-report.json")
+            package_evidence = read_pip_evidence(f"{dest_dir}/{cell['cell_id']}_install-report.json", 
+                                                f"{dest_dir}/{cell['cell_id']}_setup-install-report.json",
+                                                f"{dest_dir}/{cell['cell_id']}_pip_log.txt",)
         elif (cell["ecosystem"] == "java"):
             package_evidence = read_java_evidence(cell, base_dir = dest_dir)
         classification = classify_logic(cell["ecosystem"], package_evidence)
