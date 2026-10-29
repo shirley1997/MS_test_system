@@ -315,49 +315,7 @@ jobs:
 
           ls -l ${depgate_write_file}_* | tee -a "${depgate_write_file}_log.txt"
 
-    # give a file prefix for all files produced by super-confused: sc_write_file
-    # print the version of super-confused as evidence
-    # stdout = the JSON result -> goes into result file (and workflow log)
-    # stderr = error messages -> goes to log file (use 2>> , NOT 2>&1: because stdout is the data to be checked)
-    # we don't need to use "scan whole dirctory" command here ( ./super-confused.js .)
-    # because a directory scan find the same files as the command we use to scan specific files
-      - name: Run super-confused (SCA Tool)
-        if: inputs.run_sca == 'on'
-        working-directory: services/nodejs
-        continue-on-error: true
-        run: |
-          sc_write_file="${{ inputs.cell_id }}_superconfused"
-
-          npm ls -g --depth=0 super-confused | tee "${sc_write_file}_version.txt"
-
-
-          echo "scan 1: package.json" | tee "${sc_write_file}_log.txt"
-          super-confused --json package.json \
-            2>> "${sc_write_file}_log.txt" | tee "${sc_write_file}_packagejson.json"
-          echo "scan 1 exit code: ${PIPESTATUS[0]}" | tee -a "${sc_write_file}_log.txt"
-
-          if [ -f package-lock.json ]; then
-            echo "scan 2: package-lock.json" | tee -a "${sc_write_file}_log.txt"
-            super-confused --json package-lock.json \
-              2>> "${sc_write_file}_log.txt" | tee "${sc_write_file}_lockfile.json"
-            echo "scan 2 exit code: ${PIPESTATUS[0]}" | tee -a "${sc_write_file}_log.txt"
-          else
-            echo "no package-lock.json in this cell" | tee -a "${sc_write_file}_log.txt"
-          fi
-
-
-          # positive control: a package name which does not exist on public registry.
-          # proves the tool actually ran
-          mkdir -p /tmp/sc_control
-          printf '{"name":"control","dependencies":{"xueting-thesis-not-published":"1.0.0"}}' \
-            > /tmp/sc_control/package.json
-          echo "positive control" | tee -a "${sc_write_file}_log.txt"
-          super-confused --json /tmp/sc_control/package.json \
-            2>> "${sc_write_file}_log.txt" | tee "${sc_write_file}_positive_control.json"
-          echo "positive control exit code: ${PIPESTATUS[0]}" | tee -a "${sc_write_file}_log.txt"
-
-          ls -l ${sc_write_file}* | tee -a "${sc_write_file}_log.txt"
-
+  
 
 
       # 7. Upload the resolution output (package-lock.json + command output) and evidence files as one artifact. 
@@ -387,16 +345,6 @@ jobs:
             services/nodejs/${{ inputs.cell_id }}_depgate_compare.json
             services/nodejs/${{ inputs.cell_id }}_depgate_heuri.json
             services/nodejs/${{ inputs.cell_id }}_depgate_heur_direct.json
-
-
-            services/nodejs/${{ inputs.cell_id }}_superconfused_version.txt
-            services/nodejs/${{ inputs.cell_id }}_superconfused_log.txt
-            services/nodejs/${{ inputs.cell_id }}_superconfused_packagejson.json
-            services/nodejs/${{ inputs.cell_id }}_superconfused_lockfile.json
-            services/nodejs/${{ inputs.cell_id }}_superconfused_positive_control.json
-
-
-            
 
           if-no-files-found: warn
           #changed from error to warn. because now some listed files (like the setup log for non-C1c cells) won't exist
