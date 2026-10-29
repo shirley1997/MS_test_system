@@ -2,7 +2,7 @@
 # Base image        : Ubuntu 24.04
 # Toolchains (pinned) : Node 24.18.0, npm 11.16.0, Python 3.12.4, pip 26.2.1,
 #                     Temurin JDK 25.0.3, Maven 3.9.16, Git 2.45.2
-# Runner binary     : v2.338.1 (10.10.2026: the previous version 2.335.1 is deprecated)
+# Runner binary     : v2.338.0 (10.10.2026: the previous version 2.335.1 is deprecated)
 # Registration mode : persistent (single long-lived runner)
 # Token supply      : runtime enviroment variable (token is short-lived, should not be embedded inside container)
 

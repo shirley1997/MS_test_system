@@ -7230,3 +7230,9 @@ brings the pip version bundled with Python 3.12.4, not 26.2.1. -> `PYTHONPATH` i
 - [Maven 3.x Compatibility Notes - Resolution from Local Repository](https://cwiki.apache.org/confluence/display/MAVEN/Maven+3.x+Compatibility+Notes)
 - [Maven Resolver - EnhancedLocalRepositoryManagerFactory (Javadoc, "impostor" problem)](https://maven.apache.org/resolver/maven-resolver-impl/apidocs/org/eclipse/aether/internal/impl/EnhancedLocalRepositoryManagerFactory.html)
 - [Maven Resolver - Local Repository](https://maven.apache.org/resolver/local-repository.html)
+
+
+
+# 29.10.2026 - make plan for the rest 2 months until final submission
+
+details in file: D:\Master_Winfo\MA_Supply_chain_security\plan_archive\thesis_master_plan_2910_to_submission.md
