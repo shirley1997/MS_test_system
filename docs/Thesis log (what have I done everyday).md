@@ -4894,20 +4894,7 @@ way, but the licence status is ambiguous. It is also pinnable through npm only
 - The `--cells` subset-rerun option of `central_automated_pipeline.py` is still not built; sub-RQ2
   needs it to re-run only the cells that came out `malicious_resolved`.
 
-## 11. Details recovered from the original screening plan file
 
-Sections 1-10 above were written from the spreadsheet and from
-`sub-RQ1_result/analysis/sub-RQ1_RQ2_process.md`. The **original sub-RQ2 screening plan file had been
-deleted** by Claude Code's 30-day cleanup and was recovered on 08.10.2026 out of old session
-transcripts. It is now stored outside the repo at:
-
-- `D:\Master_Winfo\MA_Supply_chain_security\plan_archive\recovered\plan_sub-RQ2_tool_selection_screening_process.md`
-  (54 KB, written 05.09.2026, was `hello-i-have-two-zany-lovelace.md`)
-- `D:\Master_Winfo\MA_Supply_chain_security\plan_archive\recovered\plan_sub-RQ2_SCA_tool_definition_3-4_5-4-1.md`
-  (36 KB, the companion file holding the full definition argument with verified quotes)
-
-The archive's `INDEX.md` explains how both were recovered and that 1-2 short passages in each may be
-missing. Everything below comes from those two files and was not recorded anywhere else.
 
 ### 11.1 Correction: HR2 is a **Stage 1** criterion, not Stage 3
 
@@ -7236,3 +7223,73 @@ brings the pip version bundled with Python 3.12.4, not 26.2.1. -> `PYTHONPATH` i
 # 29.10.2026 - make plan for the rest 2 months until final submission
 
 details in file: D:\Master_Winfo\MA_Supply_chain_security\plan_archive\thesis_master_plan_2910_to_submission.md
+
+
+## Technical work after the plan was confirmed (evening)
+
+### 1. pip C1b (package update) fix
+
+- **Problem:** phase 2 used `pip install --dry-run --target ./py_dependency --upgrade ...`. With `--target`, pip internally sets `ignore_installed = True` (pip source `commands/install.py`). So pip never saw the 1.0.0 installed in phase 1 and phase 2 behaved like a fresh install.
+- **Change in `service-ci-python.yml`:** phase 2 is now `PYTHONPATH=./py_dependency pip install --dry-run --upgrade <2 internal packages> --report ... .`
+  - `PYTHONPATH` adds `py_dependency` to Python's import path, so pip sees the packages installed in phase 1.
+  - `PYTHONPATH=...` is written in front of the command, so it only applies to phase 2. Phase 1 (`--target`) is unchanged.
+  - `<cell_id>_setup-install-report.json` (phase 1) is now uploaded as an artifact.
+- **New observation (pilot):** when an installed internal package still satisfies the version specifier, pip keeps it. It writes `Requirement already satisfied: <name> in ./py_dependency (1.0.0)` in the log, but the package is **not** listed in the phase-2 `install-report.json`. pip docs: the report lists the packages that are (to be) installed (https://pip.pypa.io/en/stable/reference/installation-report/).
+- **Change in `read_pip_evidence(install_report, setup_report, pip_log)`** (central pipeline):
+  - first look for the internal package in the phase-2 report (as before)
+  - if it is missing there **and** the log contains `Requirement already satisfied: <name>` -> take name, version and URL from the phase-1 setup report
+  - otherwise the package is missing -> `resolution_error` (strict)
+- **Why the setup report:** the log has name + version but no URL; the classifier needs name + version + URL. Phase 1 used the same `pip.conf` as phase 2, so the URL in the setup report is the cell's own origin.
+- **Why both conditions:** with `--upgrade`, pip prints "already satisfied" in every C1b cell whose phase 1 succeeded, also when it then upgrades. The deciding signal is "missing from the phase-2 report"; the log line confirms that an installed version existed.
+- **Checks:**
+  - offline re-classification of all 135 valid pip cells from the 15.10 artifacts with the new function: **0 differences** (old C1b logs have no "already satisfied" line for the internal packages)
+  - pilot `pip_A1a_B1a_B2a_C1b` (pinned): internal packages kept, not in the phase-2 report -> will be `private_resolved` via the setup report
+  - pilot `pip_A1a_B1a_B2b_C1b` (range): 1.0.3 in the phase-2 report -> `malicious_resolved`
+- **Thesis wording:** describe it as a pilot observation + pip documentation. The `--target` story is not mentioned in the thesis.
+- **Decision:** full 432-cell re-run tonight (simpler than editing checkpoint/results by hand, and a third reproducibility check). The 15.10 run is archived first as `sub-RQ1_result/1510/`. Expected: 0 label changes.
+
+### 2. "Kept package" during package update - one phenomenon in three ecosystems
+
+- During C1b the package manager finds that the existing state already satisfies the version specifier and keeps the package. The existing state is: pip = installed package, npm = lockfile entry, Maven = local repository `~/.m2`.
+- What differs is the origin evidence:
+
+| | origin evidence of the kept package | inside the cell's configuration? |
+|---|---|---|
+| pip (pinned C1b cells) | phase-1 setup report, same `pip.conf` | yes -> `private_resolved` |
+| npm (4 no-op cells `npm_{A1a,A1b,A2,A3}_B1a_B2a_C1b`) | URL inherited from the static setup lockfile | not always -> label correct, URL not used for origin statements |
+| Maven (4 cells B1d x B2a x C1b) | maven-lockfile sends HTTP HEAD requests to the **configured** remote repositories; under B1d only Maven Central, which has no 1.0.0 -> `resolved` empty | no -> stays `resolution_error` + explanation |
+
+- Root cause: only pip's baseline file (`fixed_pyproject.toml`) contains no registry information (finding 08.09 / 10.09). npm's lockfile and Maven's POM also fix the registry.
+- Methodology sentence: "For packages kept from the installed state during a package update, the origin is the repository from which they were installed in the setup phase."
+
+### 3. DepCheck integrated (replaces super-confused, decided 16.10)
+
+- **Runner image `infrastructure/runner_sca/Dockerfile`:**
+  - DepCheck has no releases or tags -> pinned by git commit `3c55d2905c8f1852e98e8ba96f38fbd9a3ed91b0` + SHA-256 `235f267a...8a96` of `depcheck.py` (same file as my local copy from 13.10)
+  - only Python standard library -> no pip install, no venv; the experiment's Python stays untouched
+  - run with `python3.12 -I`: isolated mode, Python ignores `PYTHON*` variables (e.g. `PYTHONPATH`), the user site-packages and the current folder -> DepCheck can never import an experiment package
+  - super-confused install commented out with the reason; image rebuilt, persistent runner `sca-thesis-runner` recreated
+- **Workflows:** super-confused step removed from all three workflows. New DepCheck step in each, scanning explicit files:
+  - pip: `pyproject.toml`
+  - npm: `package.json` (declared) + `package-lock.json` (resolved; only if the file exists, it is missing in failed cells)
+  - Maven: `pom.xml`
+- **Why explicit files, not a directory scan:** the directory scan is recursive and does not skip `py_dependency/` or `target/`; and each result must belong to one known input file.
+- **Command details:** `--export <file>.json` writes the result to its own file, so `2>&1 | tee` can collect the console output in the log; `${PIPESTATUS[0]}` = DepCheck's own exit code (1 = something reported, 0 = nothing).
+- **Positive control** (per ecosystem): a fake manifest in `/tmp/depcheck_control/` with one name that does not exist on the public registry (`xueting-thesis-not-published`; Maven `io.github.shirley1997.notpublished:xueting-thesis-not-published`). Checked today: 404 on PyPI and npm, 0 hits in the Maven search. If DepCheck reports it, the tool really asked the registry, so its silence on the real packages means "name exists", not "tool broken".
+- **From the source:** network errors are counted as `error` (not as safe); other HTTP errors (e.g. 500) are treated as "exists".
+- **Test `pip_A1a_B1a_B2b_C1c` (run_sca=on):**
+  - scan 1: 3 packages, 3 safe, 0 vulnerable, exit code 0 -> silent because the internal names exist on PyPI (attacker 1.0.3)
+  - positive control: `xueting-thesis-not-published` NOT FOUND -> vulnerable, exit code 1
+  - in a clean result neither the JSON nor the log names the checked packages (only "Packages: 3") -> the names come from the uploaded `pyproject.toml`
+  - output wording is future tense: "An attacker **can** register these ..." -> the tool reports an opportunity (S1), not the attack that already happened
+- npm and Java steps written and checked; test cells: `npm_A1a_B1a_B2b_C1c`, `mvn_A1a_B1a_B2b_C1c`.
+
+### 4. Finding before the Java test: DepCheck checks Maven through a search index
+
+- DepCheck asks `search.maven.org/solrsearch` (a search API), not the Maven repository itself.
+- Checked today:
+  - `io.javalin:javalin` -> found (numFound 1)
+  - `io.github.shirley1997.thesis:xueting-thesis-event-juhe` and `:xueting-thesis-result-fanhui` -> **numFound 0**
+  - but `repo1.maven.org/maven2/io/github/shirley1997/thesis/xueting-thesis-event-juhe/maven-metadata.xml` serves version **1.0.3** (published 02.08.2026)
+- **Prediction (written before the Java test):** in every Maven cell DepCheck reports both internal packages as "NOT FOUND -> vulnerable" (exit code 1), although the attacker package exists on Maven Central. This warning is wrong by the tool's own rule, and it is the same in every Maven cell, so it is not cell-dependent and does not open the gate for the 190-cell run.
+- Why the search index has no entry for my packages is not verified - only the observation is recorded.

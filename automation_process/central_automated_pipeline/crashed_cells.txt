@@ -1,1 +1,0 @@
-2026-10-15 01:17:26.748434: mvn_A1a_B1d_B2a_C1a - Command '['gh', 'workflow', 'run', 'service-ci-java.yml', '--repo', 'shirley1997/MS_test_system', '-f', 'cell_id=mvn_A1a_B1d_B2a_C1a', '-f', 'A=A1a', '-f', 'B1=B1d', '-f', 'B2=B2a', '-f', 'C1=C1a']' returned non-zero exit status 1.
