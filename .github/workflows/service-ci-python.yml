@@ -311,6 +311,42 @@ jobs:
           ls -l ${depgate_write_file}_* | tee -a "${depgate_write_file}_log.txt"
 
 
+    # 16.10.2026: run the tool "DepCheck", this tool replaces the tool "super-confused"
+    # DepCheck read package names from manifest files and check these names in the public registry (pypi.org) 
+    # if name not found (returns code 404) -> reported as "vulnerable"
+    # the result goes to a separate file (with option --export), so 2>&1 can be used for the log
+    # use python3.12 -I /opt/depcheck/depcheck.py to run DepCheck from the directory that dockerfile put it.
+    # write the results in a json file
+      - name: Run DepCheck (SCA Tool)
+        if: inputs.run_sca == 'on'
+        working-directory: services/python
+        continue-on-error: true
+        run: |
+          depcheck_write_file="${{ inputs.cell_id }}_depcheck"
+
+          python3.12 -I /opt/depcheck/depcheck.py --version | tee "${depcheck_write_file}_version.txt"
+
+          echo "scan 1: pyproject.toml" | tee "${depcheck_write_file}_log.txt"
+          python3.12 -I /opt/depcheck/depcheck.py pyproject.toml --no-banner \
+            --export "${depcheck_write_file}.json" \
+            2>&1 | tee -a "${depcheck_write_file}_log.txt"
+          echo "scan 1 exit code: ${PIPESTATUS[0]}" | tee -a "${depcheck_write_file}_log.txt"
+
+          # positive control: create a fake pyproject.toml in a fake project
+          # use a package name that does not exist on PyPI
+          # if DepCheck reports it as vulnerable, that means the tool works properly
+          mkdir -p /tmp/depcheck_control
+          cat > /tmp/depcheck_control/pyproject.toml <<'EOF'
+          [project]
+          name = "control"
+          version = "1.0.0"
+          dependencies = ["xueting-thesis-not-published==1.0.0"]
+          EOF
+          echo "positive control:" | tee -a "${depcheck_write_file}_log.txt"
+          python3.12 -I /opt/depcheck/depcheck.py /tmp/depcheck_control/pyproject.toml --no-banner \
+            --export "${depcheck_write_file}_positive_control.json" \
+            2>&1 | tee -a "${depcheck_write_file}_log.txt"
+          echo "positive control exit code: ${PIPESTATUS[0]}" | tee -a "${depcheck_write_file}_log.txt"
 
 
 
@@ -345,6 +381,12 @@ jobs:
             services/python/${{ inputs.cell_id }}_depgate_log.txt
             services/python/${{ inputs.cell_id }}_depgate_compare.json
             services/python/${{ inputs.cell_id }}_depgate_heuri.json
+
+            services/python/${{ inputs.cell_id }}_depcheck_version.txt
+            services/python/${{ inputs.cell_id }}_depcheck_log.txt
+            services/python/${{ inputs.cell_id }}_depcheck.json
+            services/python/${{ inputs.cell_id }}_depcheck_positive_control.json
+
 
 
           if-no-files-found: warn
