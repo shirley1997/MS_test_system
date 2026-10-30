@@ -7293,3 +7293,91 @@ details in file: D:\Master_Winfo\MA_Supply_chain_security\plan_archive\thesis_ma
   - but `repo1.maven.org/maven2/io/github/shirley1997/thesis/xueting-thesis-event-juhe/maven-metadata.xml` serves version **1.0.3** (published 02.08.2026)
 - **Prediction (written before the Java test):** in every Maven cell DepCheck reports both internal packages as "NOT FOUND -> vulnerable" (exit code 1), although the attacker package exists on Maven Central. This warning is wrong by the tool's own rule, and it is the same in every Maven cell, so it is not cell-dependent and does not open the gate for the 190-cell run.
 - Why the search index has no entry for my packages is not verified - only the observation is recorded.
+
+
+
+
+# 30.10.2026 - sub-RQ2: probe run of 9 cells, gate decision: no 190-cell main experiment
+
+Starting point: the 3rd full sub-RQ1 run (with the pip C1b fix) is identical to the runs of 14.10 and 08.09 -> sub-RQ1 dataset is reproducible.
+
+## 1. Why a probe run and a gate rule
+
+- Open question: should I run all 190 vulnerable (`malicious_resolved`) cells with the SCA tools (the planned sub-RQ2 main experiment)? This needs a modified copy of the central automation pipeline (cell filter, `run_sca=on`, 5-bucket classifier, new result file) -> 2-3 days of work.
+- Supervisor + professor: the qualitative comparison of detection mechanisms is more important; the main experiment only if it can show something new.
+- Solution: run a few **probe cells** by hand (existing service CI pipelines, `run_sca=on`, persistent runner `sca-thesis-runner`), and decide with a **gate rule** that is written down **before** the run.
+
+## 2. Probe design
+
+| ecosystem | vulnerable (`malicious_resolved`) | control (`private_resolved`) |
+|---|---|---|
+| npm | `npm_A1a_B1a_B2b_C1a`, `npm_A1a_B1a_B2b_C1c` | `npm_A1a_B1a_B2a_C1c` |
+| pip | `pip_A1a_B1a_B2b_C1b`, `pip_A1a_B1a_B2b_C1c` | `pip_A1a_B1a_B2a_C1c` |
+| Maven | `mvn_A1a_B1a_B2b_C1a`, `mvn_A1a_B1a_B2b_C1c` | `mvn_A1a_B1a_B2a_C1c` |
+
+- Same A1a x B1a in all cells -> only ecosystem, B2 and C1 change.
+- The 2 vulnerable cells differ in C1 -> different input files for the tools (with / without lock file).
+- The control is the "twin" of a vulnerable cell: same configuration, but pinned version (B2a), not attacked.
+- Why one control per ecosystem: a warning that also appears in the non-vulnerable twin cannot be about the attack.
+
+## 3. Gate rule and predictions (written before the run)
+
+- Written in `sub-RQ2_tool_selection/candidate_detection_logic.md`, section 15.
+- Basis: local tests, documentation and source code indicate that the tools' DC-related warnings depend on the package names in the scanned file and on the state of the public registry (is this name available on public registry?) -> these 2 things are the same in all vulnerable cells of an ecosystem. currently only python service is tested. but the tool is Not yet tested in the pipeline for npm and Maven.
+- **Gate rule:** run the 190 cells only if a DC-related warning (name free / wrong registry origin / anything about dependency confusion, whatever it is based on)
+  - (a) appears in a vulnerable cell but not in its control cell (which has result private_resolved), or
+  - (b) differs between the two vulnerable cells of one ecosystem.
+  - Other unexpected outputs are analysed first. if output changed depend on different A/B1, more probes with other A/B1 values are run before deciding. Known exception: Trivy reads `<repositories>` of `pom.xml`.
+  - Not counted: inventory differences (e.g. 1.0.3 vs 1.0.0) and an package origin URL without any warning.
+- **Predictions (short):** Trivy: `nothing_found` / `other_warning`, no origin URL (open question: npm CycloneDX), no input in pip C1b. DepGate: `compare` silent, `heur` -> `metadata_warning` also shows in controls cell. for Maven (java pipeline): field `isMissing` may be true. DepCheck: silent for npm/pip, Maven cells show "NOT FOUND" (which is false result, the tool search maven index, not maven central) also appear in the control cell (because in both cell the attacker package actually exist on public registry). Positive controls fire --> these tools actually work properly. Expected: `attack_detected` = 0, gate stays closed.-> no main experiment needed
+- New finding before the run: (source code review) DepGate uses the same Maven search API as DepCheck (`REGISTRY_URL_MAVEN = https://search.maven.org/solrsearch/select` in DepGate `constants.py`).
+
+## 4. Running the probes
+
+- the first npm cell took 10-15 min (yesterday's sub-RQ1 cells: 1 min, because `run_sca` was off). Reason: DepGate reads the whole `package-lock.json` (70 packages) 3 times (for different scan / analysis levels)(`compare`, `heur`, `heur --direct-only`) and send request to npm, deps.dev and the GitHub API for each package.
+
+
+## 5. Checks that the outputs are valid (but not caused by network problems)
+
+- All 9 cells resolved as in sub-RQ1: 1.0.3 in vulnerable cells, 1.0.0 in control cells.
+- All DepCheck positive controls fired. DepCheck `error_count` = 0 in every cell.
+- The Maven search API answered with HTTP 200 (with 0 results) -> package "NOT FOUND" / `isMissing` field is True -> are real answers of the index search.
+- GitHub API `403` (rate limit) appeared in DepGate npm logs (115-133 lines per cell) -> only DepGate's `heur` metadata is affected, the DC check is not affected.
+
+## 6. Results
+
+results file \ raw output files of the tools and cells: D:\Master_Winfo\MA_Supply_chain_security\pilot_test_sub-RQ2\probe_run_3010
+
+| | npm | pip | Maven |
+|---|---|---|---|
+| Trivy | lists internal packages, no warning, no origin URL in output format JSON / CycloneDX | C1c: lists 1.0.3 from `pylock`; C1b: **no input file pylock**; only the Flask CVE; SPDX `downloadLocation: NONE` -> no package origin URL | CVEs in public packages only (jackson, jetty); internal packages listed **without version** under a range |
+| DepGate `compare` | `isMissing=false` | `isMissing=false` | `isMissing=true` (this is a false warning because attacker package has published), it is also shown in the control cell |
+| DepGate `heur` | `metadata_warning` (score 0.0, pacakge has one version), exit 3, also shown in the control cell | same | `hasRisk=true`, also shown in the control cell |
+| DepCheck | `vulnerable: []` (manifest + lock file, all packages show "safe") | `vulnerable: []` | both internal packages "NOT FOUND" (this is a wrong output), exit 1, also shown in the control cell |
+
+- No tool reported where a package came from: no origin URL in any output format (the open question for npm CycloneDX is now answered: no `externalReferences`, no `repository_url`).
+- No tool reported that the attacker package is resolved: `attack_detected` = 0 in all probe cells.
+- Outcome levels: everything is counted as `not_detected`, except Maven cells with DepCheck / DepGate = `risk_reported`, --> it is a wrong output. and it also shown in control cell. somehow they can't find attacker package through maven search index API.
+
+## 7. Gate decision: CLOSED -> no 190-cell main experiment
+
+- No DC-related warning differs between a vulnerable cell and its control cell, and none differs between the two vulnerable cells of an ecosystem.
+- The rest vulnerable cells differ only in A and B1, which the tools do not use for producing their warnings (documentation + source code reviewed). The probes covered the variables the tools do read (B2, C1).
+- -> Running all 190 cells would not show anything new. **Decision: the main experiment is not run, and the central automation pipeline is not changed for sub-RQ2.**
+- To write in the thesis: the probes measured only A1a x B1a. the other A/B1 combinations are covered by the argument above, not by measurement. recall over all 190 cells is not computed, because the tools' outcome does not change between cells.
+- Findings: (scope = the three measured tools + the 24-tool review for hypothesis, not "SCA tools in general"): none of the three tools reported that the attacker's package is resolved. in these 3 tools, Depcheck and depgate checks dependency confusion only based on ask whether a package name from manifest / lockfile exists on the public registry. for Maven two tools (depcheck, depgate) even gave a false "package name missing on public registry" warning, because they query a search index instead of the repository (maven central).
+
+## 8. Not predicted (findings)
+
+- **DepGate Maven - two sources disagree.** `exists=false` and `isMissing=true` say the same thing (name not found); both come from the search API `search.maven.org`. A search API answers HTTP 200 even when it finds nothing - the result is in the body (`"numFound": 0`). At the same time DepGate reads `maven-metadata.xml` and the 1.0.3 `.pom` from the real repository `repo1.maven.org` (HTTP 200) and the GitHub repo of the attacker package (log: `Invoking Maven enrichment without search result`). So one output says "the name does not exist" and `resolved_version: 1.0.3`.
+- **DepGate Maven control cell:** spec is exact `1.0.0` (not on Maven Central), but `resolved_version` = 1.0.3. In the npm control (same situation) it is `None`.
+- **`resolved_version` is not the project's resolution result:** DepGate resolves the spec against the **public** registry (npm/Maven: matched against the spec; pip: always the latest, `requested_spec: null`). For npm, `requested_spec` is filled (e.g. `>=1.0.0 <2.0.0`), unlike pip.
+- **Trivy Maven cell:** with a version range `[1.0.0,2.0.0)` Trivy cannot determine the version (log: `Dependency version cannot be determined`) and lists the internal packages without version; in the pinned control it shows 1.0.0.
+- None of these depends on A/B1 -> no extra probes needed.
+
+## Files
+
+- Probe artifacts: `D:\Master_Winfo\MA_Supply_chain_security\pilot_test_sub-RQ2\probe_run_3010\` (one folder + zip per cell)
+- Result table (27 rows = 9 cells x 3 tools, with bucket and outcome level): `...\probe_run_3010\probe_results_3010.csv` and `probe_run_results.xlsx`
+- Gate rule + predictions: `sub-RQ2_tool_selection/candidate_detection_logic.md`, section 15
+- Plan for thesis: `D:\Master_Winfo\MA_Supply_chain_security\plan_archive\thesis_master_plan_2910_to_submission.md`
