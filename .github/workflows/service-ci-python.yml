@@ -234,11 +234,12 @@ jobs:
       # sub-RQ2 test round: run Trivy against this cell's files.
       # the switch input run_sca is turned on, so this step can be run or not run.
       # Three scans per cell:
-      #   1. declared only  + json       -> the SCA report that would be classified
-      #   2. declared only  + cyclonedx  -> the output format that can carry an origin URL
-      #   3. everything     + json       -> what changes when installed packages are visible
-      # Scan 2 is SBOM-only, so it needs no vulnerability database.
-      # Exit codes are captured using PIPESTATUS.
+      # 1. declared dep only + json     
+      # 2. declared dep only + cyclonedx  
+      # 3. declared dep only + spdx (json)
+      # 4. everything + json       -> what changes when installed packages are visible
+
+      # Exit codes are captured using PIPESTATUS
 
       # trivy_write_file is the filename prefix for everything Trivy writes (e.g. pip_A1a_..._trivy). 
       # SKIP is the list of folders that Trivy should ignore: the directory holding installed packages (py_dependency) rather than declared ones.

@@ -246,7 +246,7 @@ jobs:
       # Exit codes are captured using PIPESTATUS.
 
       # trivy_write_file is the filename prefix for everything Trivy writes (e.g. pip_A1a_..._trivy). 
-      # SKIP is the list of folders that Trivy should ignore: the directory holding installed packages (py_dependency) rather than declared ones.
+      # SKIP is the list of folders that Trivy should ignore: the directory holding installed packages (node_modules) rather than declared dependencies
 
       # use trivy fs . to scan the whole directory, use vuln scanner
       # use tee -a  to append the command output to the log file.
