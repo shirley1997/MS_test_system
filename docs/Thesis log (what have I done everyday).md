@@ -6239,7 +6239,7 @@ the pipeline steps pass **no** cache flag used, they rely on the `ENV`.
 Same version as `ARG DEPGATE_VERSION=0.10.0` (in Dockerfile.
 
 ```bash
-py -3.12 -m venv "$SCA/depgate_venv"
+python -m venv "$SCA/depgate_venv"
 "$SCA/depgate_venv/Scripts/pip.exe" install --index-url https://pypi.org/simple "depgate==0.10.0"
 "$SCA/depgate_venv/Scripts/pip.exe" show depgate | head -2    # -> Version: 0.10.0
 ```
@@ -7362,7 +7362,7 @@ results file \ raw output files of the tools and cells: D:\Master_Winfo\MA_Suppl
 ## 7. Gate decision: CLOSED -> no 190-cell main experiment
 
 - No DC-related warning differs between a vulnerable cell and its control cell, and none differs between the two vulnerable cells of an ecosystem.
-- The rest vulnerable cells differ only in A and B1, which the tools do not use for producing their warnings (documentation + source code reviewed). The probes covered the variables the tools do read (B2, C1).
+- The rest vulnerable cells have the same package names and the same public-registry state, so the tools' DC-related warnings are expected to be the same there too.
 - -> Running all 190 cells would not show anything new. **Decision: the main experiment is not run, and the central automation pipeline is not changed for sub-RQ2.**
 - To write in the thesis: the probes measured only A1a x B1a. the other A/B1 combinations are covered by the argument above, not by measurement. recall over all 190 cells is not computed, because the tools' outcome does not change between cells.
 - Findings: (scope = the three measured tools + the 24-tool review for hypothesis, not "SCA tools in general"): none of the three tools reported that the attacker's package is resolved. in these 3 tools, Depcheck and depgate checks dependency confusion only based on ask whether a package name from manifest / lockfile exists on the public registry. for Maven two tools (depcheck, depgate) even gave a false "package name missing on public registry" warning, because they query a search index instead of the repository (maven central).
@@ -7381,3 +7381,265 @@ results file \ raw output files of the tools and cells: D:\Master_Winfo\MA_Suppl
 - Result table (27 rows = 9 cells x 3 tools, with bucket and outcome level): `...\probe_run_3010\probe_results_3010.csv` and `probe_run_results.xlsx`
 - Gate rule + predictions: `sub-RQ2_tool_selection/candidate_detection_logic.md`, section 15
 - Plan for thesis: `D:\Master_Winfo\MA_Supply_chain_security\plan_archive\thesis_master_plan_2910_to_submission.md`
+
+
+
+# 31.10.2026 - sub-RQ2: local tests of the two exception tools snync and lockaudit
+
+**Stand:** both exception tools of my hypothesis are installed locally (outside the repo) and run on my
+test application + small positive-control files. Goal: see how they really behave on different input
+files / ecosystems.
+
+- Output files: `sub-RQ2_tool_selection/tool_scan_pilot/` (gitignored, kept as evidence for the submission)
+- Classification changes are also written into `sub-RQ2_tool_selection/candidate_detection_logic.md`
+  (result table, row 26, sections 7 and 8, new section 5a)
+
+## 1. Setup (does not change my development environment)
+
+- Install folder: `D:\Master_Winfo\MA_Supply_chain_security\sca_tool_install`
+- Variables file `sca_tool_install/env.sh`, load it in every new Git Bash terminal with
+  `source /d/Master_Winfo/MA_Supply_chain_security/sca_tool_install/env.sh`
+
+### snync 1.3.4
+
+- README says `npm install -g snync`. `-g` = global install, adds `snync` to PATH -> changes my
+  environment. Instead: local install into one specific folder :
+
+```bash
+cd "$SCA/snync"
+npm install --prefix . snync          # -> snync@1.3.4 (latest release, 2022-09-05)
+"$SNYNC" --version                    # -> 1.3.4
+```
+
+
+- Which file to run: every npm tool declares its command in the `"bin"` field of its `package.json`
+  (`bin/snync.js`). npm also creates a ready-to-run shortcut in `node_modules/.bin/snync` -> that is the env var `$SNYNC`.
+- `--help`: only 3 flags: `-d` (folder with `package.json`), `-p` (names of private packages), `-x` (debug).
+
+### lockaudit 0.1.0
+
+- only One Python file -> no pip install, no venv.
+- reading the git repo, there is No releases / tags -> pinned by commit SHA.
+
+```bash
+mkdir -p "$SCA/lockaudit"
+curl -fsSL -o "$LOCKAUDIT" \
+  https://raw.githubusercontent.com/kriskimmerle/lockaudit/6b22797ed00b45bd80ae3c22d1dd3d229689f1cd/lockaudit.py
+
+python -I "$LOCKAUDIT" --version    # lockaudit 0.1.0
+```
+
+- `-I` = isolated mode (same as DepCheck). On Windows also `-X utf8` is needed when the output goes into a file.
+- Run command: `python -I -X utf8 "$LOCKAUDIT" <file> > "$OUT/<name>.txt"`, then `echo "exit code: $?" >> "$OUT/<name>.txt"`
+  (`>>` appends. The `echo` must come directly after the tool command).
+
+## 2. snync
+
+### How snync decides 
+
+| situation | output | stage |
+|---|---|---|
+| name **not** on npm (npm answers `"error": "Not found"`) | `⚠️ vulnerable` | S1 |
+| name on npm **and** it first declared in `package.json` **before** this package is published on npm (`time.created`) | `❌ suspicious` | S2 |
+| name on npm and marked private with `-p` (dates do not matter) | `❌ suspicious` | S2 (not tested) |
+| package name on npm, entered `package.json` after it appeared on npm | nothing | - |
+
+- "first declared in `package.json`" = earliest commit in the git history whose `package.json` contains the package name
+  (`git log ... --first-parent -- package.json`(found the earlist commit) , then `git show <hash>:package.json`) (show the content of package.json of that commit). If not found -> snync uses **today** 's time (`Date.now()`).
+- Registry URL is hard-coded: `https://registry.npmjs.org/<name>` (`src/RegistryClient.js`)
+- Input = only `package.json` in the `-d` folder (`dependencies` + `devDependencies`, `src/Parser.js`).
+  Scoped names (`@org/name`) are skipped (`main.js` checks only `nonScopedDependencies`).
+- snync did not reads the lockfile or the resolved URL -> it does not react to S3 (compromise).
+
+### Runs
+
+| run | input | output | file |
+|---|---|---|---|
+| 1, original code | `services/nodejs` | 3x `Checking dependency: ...`, **no verdict** for any package | `snync_nodejs_run1.txt` |
+| 2, one line changed | `services/nodejs` | `express`: nothing. `xueting-thesis-event-jianding`, `xueting-thesis-service-fasong`: **`❌ suspicious`** | `snync_nodejs_run2_code_fixed.txt` |
+| positive control | `tool_scan_pilot/snync_positive_control/package.json` with only `xueting-thesis-not-published` (a madeup package) | **`⚠️ vulnerable`** -> snync searched on npm and did not find this package -> report | `snync_positive_control.txt` |
+| python service | `services/python` | **crash**: `Error: ENOENT ... services\python\package.json` | `snync_python.txt` |
+
+- Command (run inside the service folder): `"$SNYNC" -d . 2>&1 | tee "$OUT/<file>.txt"`
+- Java service not run: snync looks for the same `package.json`(snync only supports npm ecosystem) -> same crash error like python service expected.
+
+### Why run 1 was silent: snync assumes `package.json` is at the git root
+
+- My git history: `services/nodejs/package.json` was committed only once: `9589ef4`, `1782675678` = 28.06.2026 21:41
+  (the cell `package.json` files are generated in CI and never committed). the package on npm public registry is uploaded -> variable `time.created` = 12.07.2026.
+- I ran snync's two git commands by hand inside `services/nodejs`:
+
+| command (both run inside `services/nodejs`) | how git reads `package.json` | result |
+|---|---|---|
+| `git log --pretty=format:"%ct %H" --first-parent -- package.json` | relative to the current folder | finds commit `9589ef4`, MS_test_system/services/nodejs/package.json, which exists |
+| `git show 9589ef4:package.json` | the path after `:` is a path inside the commit, **always start from the repo root** | `fatal: path 'services/nodejs/package.json' exists, but not 'package.json'`, it tries to find MS_test_system/package.json, which doesn't exist |
+
+
+
+- So "git log" finds the commit, "git show" fails to read the file from it, and snync never gets the earlist package.json. snync's author probably only tested repos with package.json at the root, where both readings point to the same file.
+- What happens inside snync next: 
+- git show fails, so snync gets empty text instead of the old package.json.
+Parser.js tries to read it as JSON, fails, and skips it silently (comment in the code: // Skip broken snapshots).
+snync now has no "added to source" date, so it uses today (main.js: Date.now() // If a dependency is not in the git history).
+Today (31.10) is after 12.07 (the day when attacker package has published on npm), so there's no verdict of packages.
+
+- Fix for run 2: `src/RepoManager.js` line 39 `${hash}:${filepath}` -> `${hash}:./${filepath}` (`./` = relative
+  to the current folder, as git's hint suggests). this original code file is Backuped: `src/RepoManager_original.js`.
+  - the variable `${filepath}` is just the text `package.json` (`main.js`); snync **is**
+    inside `services/nodejs`. Only `git show` reads the path from the repo root.
+  
+- `-x` (debug) does nothing: `bin/snync.js` passes `debug:`, `main.js` expects `debugMode` -> names do not match (bug).
+
+### snync findings
+
+- Run 2: snync is the only tool in my local tests whose DC warning fires on my internal names while they
+  exist on the public registry. It reacts to **S2** (publication date) = still a **risk** signal.
+  It does not read the resolution result -> cannot report compromise (S3).
+- snync supports npm only: on a folder without `package.json` it **crashes** with a raw Node error, no "unsupported ecosystem" message.
+- The positive-control folder is inside my repo, so snync ran `git log` there and found no commit
+  (file never committed) -> use today's date. No effect. the produced warning `vulnerable` only needs npm's "not found" results (package name not exist on public registry).
+
+
+## 3. lockaudit
+
+### Supported input (README + `detect_and_parse()`)
+
+- 4 lockfile formats + requirements files: `requirements.txt`, `uv.lock`, `poetry.lock`, `Pipfile.lock`, `pylock*.toml`.
+  `requirements.txt` is not a lockfile (only acts like one when every line is pinned + hashed).
+- Parser chosen **by file name**. Unknown name -> guess from content -> last fallback = requirements parser.
+- Folder mode: looks for those package names + look the file `pylock*.toml` in that folder only 
+- `info.format` is set by each parser (search `format="`), there are many options: `requirements`, `uv`, `poetry`, `pipfile`, `pylock`.
+- No network call at all (no HTTP client in the file).
+
+### The two DC-related rules in lockaudit
+
+- **LA09 "Private names"** (`check_la09_private_package_names`): fires when:
+  (1) name matches `^internal-`, `^private-`, `^corp-`, `^company-`, `-internal$`, `-private$` **and**
+  (2) `if not pkg.index_url or "pypi.org" in pkg.index_url` (no private source recorded for this package). --> means this internal package is resolved from pypi (only fires in poetry.lock or pipfile.lock)
+- **LA07 "Dep confusion"** (`check_la07_dependency_confusion`): Two branches. branch `requirements` (check whether has more than one index configuration
+  `--index-url`/`--extra-index-url`, or any `--extra-index-url` inside the file) and branch `poetry`
+  (more than one distinct source URL in `poetry.lock`). **No branch for pylock.**
+  The comment `# poetry.lock / pyproject.toml` is misleading: no code reads `pyproject.toml` there.
+- `pyproject.toml` is only used by LA08 (stale lockfile). which is not related to dependency confusion
+
+### What a lock file records about the package origin (VERY IMPORTANT)
+
+- (`pip lock` / `poetry lock`) -> Both lockfiles are written **after** dependency resolution . They differ in how detailed the package origin is.
+
+| | `pylock.toml` (pip, my cells) | `poetry.lock` |
+|---|---|---|
+| resolved name + version | yes | yes |
+| file name (whl) + hash | yes | yes (`files = [...]`) |
+| **full download URL of the package file** | **yes**: `url = "http://localhost:8081/.../blinker-1.9.0-py3-none-any.whl"` (very specific resolved /download URL of that package) | **no**, only the file name (see next column) |
+| **which index (package registry) this package came from** | package registry inside the resolved URL of package | **yes**: `[package.source] url = ".../simple"`, but **only** for a non-default source. A package from PyPI **does not have** source section |
+
+- pylock = "which exact file from which address". poetry.lock = "which index (package registry)", and only show this URL when it is not PyPI.
+  For DC the index level is enough ("is this package resolved from private registry or PyPI?").
+- Example `poetry.lock` entry from a private source:
+
+```toml
+[[package]]
+name = "xueting-thesis-event-fengfu"
+version = "1.0.0"
+files = [ {file = "xueting_thesis_event_fengfu-1.0.0-py3-none-any.whl", hash = "sha256:..."} ]
+
+[package.source]                  # only written for a NON-default source
+type = "legacy"
+url = "http://localhost:8081/repository/pypi-hosted/simple"
+reference = "nexus"
+```
+
+- Source for the structure: Poetry docs https://python-poetry.org/docs/repositories/ (not my handwritten
+  control file, and not `examples/poetry.lock` in the lockaudit repo - that one is handwritten by the author).
+
+### What LA09 does with each format (VERY IMPORTANT)
+
+| | `poetry.lock` | `pylock.toml` |
+|---|---|---|
+| package name matches a pattern (e.g. start with "internal" etc.)? | checked | checked, but on the **wheel file name** (a parser bug: the wheel name is extracted from pylock.toml instead of only the package name) |
+| package origin URL checked? | **yes**: `[package.source] url` -> `index_url` | **no**: the wheel's `url` (resolved URL) goes into `source_url`, and LA09 never reads `source_url`. and `index_url` in pylock.toml stays empty -> which means `not pkg.index_url` is always true |
+| result | warning fires only if package name matches pattern (e.g. start from "internal", "company" etc., looks like an internal package) **and** no private source is recorded (means this package is resolved from pypi) | fires whenever the package name matches the pattern (looks like an internal package), **whatever the URL is** (change of URL does not change the warning) |
+
+- So on **pylock.toml** (as input file), LA09 cannot tell an internal package resolved from Nexus apart from one from PyPI --> the warning message
+  "Internal packages fetched from public PyPI" says more than it checked.
+- For `poetry.lock`, `internal-from-pypi` was reported **not** because lockaudit read a PyPI URL, but because
+  its source section is **missing** (Poetry writes none for the default index pypi). --> but it means that this package is resolved from Pypi
+- `Pipfile.lock` (code review only, not tested): `index_url` = index **name** (e.g. `"pypi"`), not a URL ->
+  `"pypi.org" in "pypi"` is false -> LA09 behaves differently again.
+
+### pylock.toml parser bug in lockaudit
+
+- the function `parse_pylock_toml` does not track sections. It takes every `name = "..."` line, but there are two name lines for each package, one for package name, one for wheel name (package file). so the wheel name
+  overwrites the real package name:
+
+```toml
+[[packages]]
+name = "blinker"                              <- package name
+[[packages.wheels]]
+name = "blinker-1.9.0-py3-none-any.whl"       <- also "name" -> overwrites it
+```
+
+- Result: package `blinker-1-9-0-py3-none-any-whl`. The "ends with" patterns
+  (`-internal$`, `-private$`) can never match a package that has a wheel section (name ends with `-whl`).
+- The README example output shows normal names (`flask==3.0.0`) because it comes from a
+  **requirements.txt** file (header `(requirements)`): one line per package, no second `name =`. The README does not have pylock example.
+
+### Runs on my own application
+
+| input | output | why | file |
+|---|---|---|---|
+| `services/python` (folder) | reads only the 2 old test files `pylock.test.toml`, `pylock.test3.toml` (`Files: 2`, `Packages: 31`). 15x `LA03` CRITICAL (http) + 15x `LA06` HIGH (localhost). No LA07, no LA09. Exit code 0 | LA03/LA06 flag my **Nexus** URL (the private registry) as suspicious. LA07 has no pylock branch. My names match no LA09 pattern | `lockaudit_python.txt` |
+| `services/python/pyproject.toml` | header `(requirements)`. "Packages": `name`, `version`, `description`, `requires-python`, `dependencies` (all "Unpinned"). Exit code 0 | unknown file name -> requirements parser. It takes the first word of each line. Lines starting with `"` (my 3 real dependencies) are skipped. No error, normal score | `lockaudit_python_pyproject.txt` |
+
+- **Finding:** given an unsupported file, lockaudit guesses but gives a wrong result. no message like "unsupported file format". (guess which content are package names, and got it wrong). tested with pyproject.toml:  `sub-RQ2_tool_selection\tool_scan_pilot\lockaudit_python_pyproject.txt ` (comapre: snync crashed with an code error).
+
+### Positive controls (handwritten files, madeup only for test)
+
+- Files: `tool_scan_pilot/lockaudit_positive_control/pylock.positive_control.toml` and `.../poetry.lock`
+
+| control | packages in the file | LA09 output | what it shows | file |
+|---|---|---|---|---|
+| poetry.lock | `internal-from-nexus` (with `[package.source]` Nexus URL), `internal-from-pypi` (no source) | **only** `internal-from-pypi` | same name pattern, only the recorded source differs -> LA09 reads the source -> **S3** | `lockaudit_positive_control_poetry.txt` |
+| poetry.lock, 2nd run | `internal-from-pypi` renamed to `package-from-pypi` | nothing | the name pattern decides which packages are checked | `lockaudit_positive_control_poetry_nonamepattern.txt` |
+| pylock | `internal-test` (wheel), `test-internal` (wheel), `demo-internal` (no wheel) | `internal-test-1-0-0-py3-none-any-whl` and `demo-internal`. **Not** `test-internal` | LA09 runs on pylock. `-internal$` works without wheel section (`demo-internal`), fails with one (`test-internal` -> `...-whl`) = parser bug measured | `lockaudit_positive_control.txt` |
+| pylock, 2nd run | same, `test-internal` URL changed to `http://localhost:8081/...` | same two LA09 lines, plus LA03 + LA06 for `test-internal` | URL change shows up only in LA03/LA06 | `lockaudit_positive_control2.txt` |
+
+- Limitation of the 2nd pylock run: the URL was changed on `test-internal`, which LA09 cannot report anyway
+  (parser bug). So "LA09 ignores the URL on pylock" is still from the code, not measured.
+
+### Other lockaudit findings
+
+- Exit code **0** even with CRITICAL findings. 
+- `LA01` (missing hash) is only checked for `pipfile` and `pylock`, not for `poetry`.
+
+### Classification of lockaudit (decided today)
+
+- Rule: classify **what the tool can do**. Whether it works on my input is recorded separately (same as DepGate).
+
+| column | value | why |
+|---|---|---|
+| fires on | **S3** (LA09) | its reporting condition which reads from the resolution record (package source URL in `poetry.lock`) - criterion 1 |
+| pre-filter | **name pattern** (6 hard-coded patterns) | decides which packages LA09 checks, not a stage - criterion 2 |
+| H holds? | **no** | no name-absence rule, no registry call |
+| evidence | source-verified + measured positive controls | criterion 5 |
+
+- In one sentence: **lockaudit reacts to S3, but only if the package name matches its pattern (lockfile thinks this package looks like a internal package, it can not truly distinguish public/private packages), and only for `poetry.lock`.**
+- On my input (pyproject.toml, pylock.toml): not applicable - pylock (origin URL is not read) + the package name of test application does not match pattern.
+- **LA07** = second DC rule: checks the project's own index configuration -> **outside S1-S3**
+  ("configuration risk"). Same thing as sub-RQ1 condition 2 (A/B1), but only when the registry configuration written inside the
+  lock / requirements.txt file. it does not read `pip.ini`. Not tested yet.
+
+  - Finding: the only rule in the whole candidate pool that checks the project-side configuration that sub-RQ1 found decisive.
+- Consequence: lockaudit is the one exception to "the tools report risk, not compromise" (23 of 24 hold).
+  "S3 reached on my own input (pylock.toml, pyproject.toml)" stays 0. (no tools can do this)
+
+## 4. Open Questions
+
+- [ ] LA07 controls: `poetry.lock` with two sources, `requirements.txt` with `--index-url` + `--extra-index-url`
+- [ ] figure out what source URL and index URL means in lockaudit's code
+- [ ] lockaudit on the two probe-cell pylock files: `pip_A1a_B1a_B2b_C1c` (`malicious_resolved`) vs `pip_A1a_B1a_B2a_C1c` (`private_resolved`),
+  in `D:\Master_Winfo\MA_Supply_chain_security\pilot_test_sub-RQ2\probe_run_3010\`
+- [x] `candidate_detection_logic.md` section 5a: pylock control row updated to the re-run with `demo-internal` (done 31.10)
+- [ ] pylock control with the `localhost` URL on **`internal-test`** (the package LA09 reports): if `LA06 ... internal-test`
+  and `LA09 ... internal-test` both appear, "LA09 ignores the URL on pylock" is measured, not only from the code
+
