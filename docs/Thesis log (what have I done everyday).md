@@ -7643,3 +7643,196 @@ name = "blinker-1.9.0-py3-none-any.whl"       <- also "name" -> overwrites it
 - [ ] pylock control with the `localhost` URL on **`internal-test`** (the package LA09 reports): if `LA06 ... internal-test`
   and `LA09 ... internal-test` both appear, "LA09 ignores the URL on pylock" is measured, not only from the code
 
+
+
+# 01.11.2026 - sub-RQ2: finished the local tests of snync and lockaudit (all open tests of 31.10 done)
+
+**Stand:** all open tests from 31.10 are done. snync was run on all 3 services. For lockaudit I measured
+(1) that LA09 ignores the URL in `pylock.toml`, (2) lockaudit on real experiment data (2 probe cells),
+(3) both branches of LA07. All output files: `sub-RQ2_tool_selection/tool_scan_pilot/`.
+Control input files: `sub-RQ2_tool_selection/tool_scan_pilot/lockaudit_positive_control/`.
+
+**Why these tests at all:** snync and lockaudit are the two exceptions to my hypothesis (most DC tools only
+check "is the package name free on the public registry?" = S1). Their classification (snync S2, lockaudit S3)
+came from README + source review. I want measured evidence of **what each tool can really do** and
+**whether it works on my test application** - two separate questions (stage = what the tool can do; whether
+it applies to my input is recorded separately).
+
+- Commands as on 31.10: `source .../sca_tool_install/env.sh`, then
+  `python -I -X utf8 "$LOCKAUDIT" <file> > "$OUT/<output>.txt"` and `echo "exit code: $?" >> "$OUT/<output>.txt"`.
+- Always give lockaudit the **file**, not the folder: in folder mode it only looks for exact file names
+  (`poetry.lock`, `requirements.txt`, ...) and would pick the wrong file.
+
+## 1. snync on the Java service -> crash (snync now tested on all 3 services)
+
+- **Why:** does snync behave differently per ecosystem? The README says npm only; on 31.10 Python crashed.
+  Java completes the measurement for all 3 services of my application.
+
+- Command in `services/java`: `"$SNYNC" -d . 2>&1 | tee "$OUT/snync_java.txt"`
+- Output: `Error: ENOENT: no such file or directory, open '...\services\java\package.json'`, exit code 1.
+- Why: snync only knows npm. `Parser.js` line 45 always opens `<folder>/package.json`; the Java service has `pom.xml`.
+
+| service | snync result | file |
+|---|---|---|
+| `services/nodejs` | runs. With the one-line fix (31.10): both internal packages `❌ suspicious` (S2) | `snync_nodejs_run2_code_fixed.txt` |
+| `services/python` | crash, no `package.json` | `snync_python.txt` |
+| `services/java` | crash, no `package.json` | `snync_java.txt` |
+
+## 2. What `index_url` and `source_url` mean in lockaudit's code
+
+- **Why:** LA09's origin check (the part that makes it S3) reads `index_url`, but pylock stores its URL in
+  `source_url`. To understand why LA09 checks the origin in `poetry.lock` but not in `pylock.toml`, I need to
+  know what these two fields are and which parser fills them.
+
+- `lockaudit.py` (around line 55) has a class `PackageEntry` = a "box" for **one package** with slots:
+  `name` (package name), `version`, `hashes`, `source_url`, `index_url`.
+- Each parser makes one box per package and fills the slots it can find. Slots it does not fill stay `""` (empty text).
+- In the rules, `pkg` = one box, `pkg.index_url` = "take the `index_url` slot of this package".
+
+| lockaudit slot | meaning | example |
+|---|---|---|
+| `index_url` | the **repository / index** the package came from | `http://localhost:8081/repository/pypi-group-public-first/simple`, `https://pypi.org/simple` |
+| `source_url` | the address of the **exact package file** | `http://localhost:8081/.../xueting_thesis_event_fengfu-1.0.0-py3-none-any.whl` |
+
+**Which parser fills which slot:**
+
+| parser | `source_url` gets... | `index_url` gets... |
+|---|---|---|
+| `parse_pylock_toml` | the wheel `url = ...` (exact file) | **nothing**, stays `""` |
+| `parse_poetry_lock` | the `reference = ...` line of `[package.source]` (a source name like `"nexus"`, not a URL) | the `url = ...` line of `[package.source]` |
+| `parse_pipfile_lock` | nothing | the `"index"` value, e.g. `"pypi"` (an index **name**, not a URL) |
+
+**The LA09 origin condition, word by word:** `if not pkg.index_url or "pypi.org" in pkg.index_url:`
+
+- `not pkg.index_url` = true if the `index_url` slot is **empty**.
+- `"pypi.org" in pkg.index_url` = true if the text `pypi.org` appears **somewhere inside** the slot (plain text search).
+- `or` = LA09 fires if either part is true (and the package name matches a pattern).
+- In plain words: "report the package if we don't know its index, **or** if its index contains `pypi.org`".
+
+| format / package | `index_url` slot | `not pkg.index_url` | `"pypi.org" in ...` | LA09 (if the package name matches) |
+|---|---|---|---|---|
+| poetry, `internal-from-nexus` | `http://localhost:8081/.../simple` | false | false | **no** (measured 31.10) |
+| poetry, `internal-from-pypi` (no source section) | `""` | **true** | false | **yes** (measured 31.10) |
+| poetry, explicit `url = "https://pypi.org/simple"` | `https://pypi.org/simple` | false | **true** | yes (code only) |
+| pylock, `internal-test` with Nexus URL | `""` (parser never fills it) | **true** | false | **yes** (measured today, control3) |
+| pylock, `internal-test` with PyPI URL | `""` | **true** | false | **yes** (measured today, control4) |
+| Pipfile.lock, `"index": "pypi"` | `pypi` | false | false (`pypi.org` is not inside `pypi`) | no (code only) |
+
+- So: on **poetry** the recorded index changes the result (= S3). On **pylock** the slot is always empty,
+  so only the package name decides. The exact file URL that pylock records sits in `source_url`, which LA09 never opens.
+
+## 3. Test: does LA09 read the URL in `pylock.toml`? -> no (measured)
+
+- **Why:** on 31.10 "LA09 ignores the URL on pylock" was only read from the code. The 31.10 URL test changed
+  the URL of `test-internal`, a package LA09 never reports, so it could not prove it. To prove it, the URL has
+  to change on a package LA09 **does** report (`internal-test`), with everything else the same.
+
+- Input: `lockaudit_positive_control/pylock.positive_control.toml`, 3 made-up packages. I only changed
+  the `url` of `internal-test` between runs. LA03/LA06 print the URL next to the package name, so the
+  output itself shows which URL was used.
+
+| output file | `internal-test` URL | LA09 for `internal-test` | LA09 for `demo-internal` | LA09 for `test-internal` |
+|---|---|---|---|---|
+| `lockaudit_positive_control3.txt` | `http://localhost:8081/...` (Nexus), extra `LA06 ... Localhost source` | **yes** | yes | no |
+| `lockaudit_positive_control4.txt` | `http://files.pythonhosted.org/...` (PyPI), no LA06 | **yes** | yes | no |
+
+- Only the URL of `internal-test` differs, and LA09 reports `internal-test` in **both** runs
+  -> **on pylock, LA09 ignores where the package came from**. Before: only from the code. Now: measured.
+- `demo-internal` has **no URL at all** and is still reported -> only the package name pattern (`-internal$`) decides.
+- `test-internal` is never reported: because of the parser bug (31.10) the package name LA09 checks is the
+  wheel file name `test-internal-1-0-0-py3-none-any-whl`, which does not end with `-internal`.
+- Other files of this control:
+  - `lockaudit_positive_control.txt`: **overwritten on 01.11 (11:06)**, the 31.10 output is gone. Same input
+    and same output as control3 (note in the file corrected). Its LA09 result is the same as on 31.10, so the
+    31.10 parser-bug finding still holds.
+  - `lockaudit_positive_control2.txt` (31.10): URL changed on `test-internal`, which LA09 cannot report
+    anyway -> weak test, kept because the 31.10 log refers to it.
+
+## 4. lockaudit on real experiment data: the two probe-cell pylock files -> no DC warning
+
+- **Why:** the controls show what lockaudit **can** do. This test shows what it does on the lock files my
+  experiment **really produces** (pip C1c cells), and whether its output differs between a cell with result
+  `malicious_resolved` and its twin with result `private_resolved` (same idea as the 30.10 probe run:
+  a warning that also appears in the control twin is not about the attack).
+
+- Inputs (from the probe run 30.10, folder name now without `(1)`):
+  - `D:\Master_Winfo\MA_Supply_chain_security\pilot_test_sub-RQ2\probe_run_3010\pip_A1a_B1a_B2b_C1c_pip_raw\pylock.pip_A1a_B1a_B2b_C1c.toml`
+  - `D:\Master_Winfo\MA_Supply_chain_security\pilot_test_sub-RQ2\probe_run_3010\pip_A1a_B1a_B2a_C1c_pip_raw\pylock.pip_A1a_B1a_B2a_C1c.toml`
+
+| | `pip_A1a_B1a_B2a_C1c` (result `private_resolved`) | `pip_A1a_B1a_B2b_C1c` (result `malicious_resolved`) |
+|---|---|---|
+| internal packages in the lock file | `xueting-thesis-*` **1.0.0** | `xueting-thesis-*` **1.0.3** (attacker) |
+| packages | 14 | 9 |
+| findings | 14x `LA03` (http) | 9x `LA03` (http) |
+| LA07 / LA09 | none | none |
+| exit code | 0 | 0 |
+| output file | `lockaudit_pip_A1a_B1a_B2a_C1c.txt` | `lockaudit_pip_A1a_B1a_B2b_C1c.txt` |
+
+- The DC-related output is the **same in both cells: nothing**. Only the inventory differs (version, number of
+  packages: the 1.0.0 internal packages pull in 5 more packages - `requests`, `certifi`, `idna`, `urllib3`,
+  `charset-normalizer`).
+- Why silent: LA07 has no check for the pylock format; LA09 only checks the package name pattern, and
+  `xueting-thesis-...` matches none of the 6 patterns.
+- LA03 fires for **every** package only because the Nexus URL uses `http://` (transport security, not DC).
+
+**Important observation - in A1a the attacker package has a "private-looking" URL:**
+
+```
+private_resolved,   1.0.0:  http://host.docker.internal:8081/repository/pypi-group-public-first/packages/xueting-thesis-event-fengfu/1.0.0/...
+malicious_resolved, 1.0.3:  http://host.docker.internal:8081/repository/pypi-group-public-first/packages/xueting-thesis-event-fengfu/1.0.3/...
+```
+
+- All URLs in both files (14/14 and 9/9) point to the **Nexus group** `pypi-group-public-first`
+  (= hosted repository + PyPI proxy together). The attacker's 1.0.3 comes from PyPI **through the group**.
+- So in A1a cells, even a tool that **did** read the pylock URL could not see the attack from the address.
+  Only the **version** (1.0.3, which does not exist in my hosted repository) shows it.
+- For the thesis: a limitation of any URL-based S3 check in my setup. Only checked for A1a - do not
+  generalise to other A values without looking at their URLs.
+
+## 5. LA07 controls: both branches fire, with different warnings
+
+- **Why:** LA07 is lockaudit's second DC rule. Until today its classification ("configuration risk, outside
+  S1-S3") and its conditions were only read from the code. LA07 cannot fire on pylock, so the only way to see
+  it work is a control in the two formats it supports (requirements, poetry). Also: what does it actually say?
+
+- Input files (in `lockaudit_positive_control/`, handwritten, **rule controls, not application data**):
+  - `poetry_la07.lock`: package `from-nexus` with source `http://localhost:8081/.../simple`, package
+    `from-second-index` with source `https://pypi.org/simple`. Package names do not match LA09.
+    The file name is not `poetry.lock`, so lockaudit guessed the format from the content
+    (`[[package]]`, no `[[package.wheels]]`) -> header `(poetry)` confirms the guess worked.
+  - `requirements_la07.txt`: `--index-url http://localhost:8081/.../simple`, `--extra-index-url https://pypi.org/simple`,
+    `flask==3.1.1` (= my experiment's `pip.ini` setup, written as a requirements file).
+
+| | `requirements` branch | `poetry` branch |
+|---|---|---|
+| what it reads | the `--index-url` / `--extra-index-url` lines **inside** the file | the `[package.source] url` of each package |
+| check 1 | more than one distinct index -> **HIGH** `Multiple package indexes detected (2 unique)` | more than one distinct source -> **MEDIUM** `Multiple package sources in poetry.lock (2 unique)` |
+| check 2 | any `--extra-index-url` -> **MEDIUM** `Using --extra-index-url (dependency confusion risk)` | - (no second check) |
+| DC wording in the output | yes: "Dependency confusion: attacker **can** register same package name on public index" | no, only the source list (the DC text is in the fix hint, shown only with `--fix`) |
+| my result | 2x LA07, exit code 0 | 1x LA07, exit code 0 |
+| output file | `lockaudit_positive_control_requirements_la07.txt` | `lockaudit_positive_poetry_la07.txt` |
+
+- Both warnings describe a **possibility** ("can register", "multiple sources"). Neither looks at the public
+  registry or at what was resolved -> classification **"configuration risk, outside S1-S3"** is now measured.
+- Exit code 0 again, even with a HIGH finding (non-zero only with `--check`).
+- Limitation of the poetry branch (from the code, not tested): it only counts packages that **have** a
+  `[package.source]` section. Poetry writes none for packages from the default index (PyPI). A typical project
+  (internal packages from Nexus with a source section + public packages from PyPI without one) -> only **1**
+  distinct source -> LA07 **silent**, although the project uses two indexes. My control only fired because
+  both packages had an explicit source section.
+
+## 6. Summary: the two exception tools
+
+| | snync | lockaudit |
+|---|---|---|
+| ecosystem | npm only (crash on Python / Java) | Python only (lock files + requirements files) |
+| DC rule(s) | `vulnerable` = package name not on npm (S1); `suspicious` = package published on npm after it entered `package.json` (S2) | LA09 = package name matches pattern + no private source recorded (S3, `poetry.lock` only); LA07 = more than one index (configuration risk, outside S1-S3) |
+| registry call | yes, npm only (URL hard-coded) | none |
+| on my test application | `❌ suspicious` for both internal packages (after the one-line fix for the monorepo bug) | no DC warning, in both the `malicious_resolved` and the `private_resolved` cell |
+| reports compromise (S3) on my input? | no (never reads the resolution result) | no (pylock: origin not read; package names do not match) |
+
+## 7. Open
+
+- [ ] `candidate_detection_logic.md`: add today's results (section 5a: control3/control4 URL test, probe cells, LA07 measured; section 3a: snync results)
+- [ ] optional: poetry LA07 control with one package **without** a source section (to measure the limitation above)
+
