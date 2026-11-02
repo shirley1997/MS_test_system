@@ -7836,3 +7836,32 @@ malicious_resolved, 1.0.3:  http://host.docker.internal:8081/repository/pypi-gro
 - [ ] `candidate_detection_logic.md`: add today's results (section 5a: control3/control4 URL test, probe cells, LA07 measured; section 3a: snync results)
 - [ ] optional: poetry LA07 control with one package **without** a source section (to measure the limitation above)
 
+
+# 02.11.2026 - sub-RQ2: where to report snync + lockaudit, ideas for the discussion chapter
+
+## 1. Decision: snync + lockaudit results go into the sub-RQ2 results chapter
+
+- The local tests of snync and lockaudit (runs, positive controls, findings) are written in the **sub-RQ2 results chapter** (7.3.2, together with the 24-tool review), not only in the discussion.
+- This matches the master plan (7.3.2 = "24-tool review outcome ... plus the local snync + lockaudit tests").
+- Split:
+  - **Results (7.3):** what I measured / observed: snync runs (monorepo bug, `suspicious` after the one-line fix, crash on Python / Java), lockaudit positive controls, lockaudit on the 2 probe cells, LA07 controls.
+  - **Discussion (8):** what it means: the deficiencies of the existing tools (ideas below).
+
+## 2. My ideas for the discussion chapter
+
+- The DC-claimed tools in the candidate pool can't really distinguish internal / public packages. Some of them judge the package name through a name pattern.
+- The general-purpose SCA tool Trivy gives no DC warning at all. Dependency confusion is also a supply chain attack related to dependencies, so Trivy could add this detection to its functions.
+- The majority of the DC-claimed tools report the **risk** (S1), not the attack.
+- Only one tool, lockaudit, reads the resolution record (lock file), but it is limited to specific files (`poetry.lock`) and to a package name pattern.
+- snync shows another detection rule (publication date vs. date the name entered `package.json`), but it also only reports risk (S2) and doesn't read the resolution record.
+- Conclusion: the existing SCA tools can't effectively detect the dependency confusion attack.
+- Research method behind this: documentation review + partly source code review + partly technical tests (local / CI runs).
+
+## 3. Points to adjust in the wording (feedback from Claude)
+
+1. **"can't distinguish internal / public packages"** - true for most tools, but not all. Some tools take a list from the user (`confused -s`, snync `-p`, DeCAF `allowlist.txt`).
+   Better: "the tools can't work out by themselves which packages are internal. They either guess from the name pattern or need a list written by the user."
+2. **"not empirically tested"** - this undersells my work. I did test empirically: 9 probe cells in CI + local runs with positive controls.
+   What was **not** done: running all 190 cells, and 21 of the 24 reviewed tools are only from documentation / source code. Write exactly that.
+3. **"the existing SCA tools can't effectively detect DC"** - bound it to my scope: "the tools in my candidate pool" or "the 3 measured tools + the 24 reviewed tools", not "SCA tools in general".
+4. **Trivy "could add DC detection"** - OK as a discussion point, but make it concrete: Trivy already parses the `url` field from `pylock.toml` and drops it in every output format (JSON, CycloneDX, SPDX). Keeping the package origin in the output would be the first step.
