@@ -8,7 +8,7 @@ from pathlib import Path
 # We build the path to results.csv from here, so the script works no matter
 # from which folder you start it.
 script_folder = Path(__file__).resolve().parent
-result_csv_file = script_folder.parent / "0809" / "results.csv"
+result_csv_file = script_folder.parent / "3010_final_dataset" / "results.csv"
 
 # column names
 column_ecosystem = "ecosystem"
