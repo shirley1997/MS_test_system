@@ -7865,3 +7865,38 @@ malicious_resolved, 1.0.3:  http://host.docker.internal:8081/repository/pypi-gro
    What was **not** done: running all 190 cells, and 21 of the 24 reviewed tools are only from documentation / source code. Write exactly that.
 3. **"the existing SCA tools can't effectively detect DC"** - bound it to my scope: "the tools in my candidate pool" or "the 3 measured tools + the 24 reviewed tools", not "SCA tools in general".
 4. **Trivy "could add DC detection"** - OK as a discussion point, but make it concrete: Trivy already parses the `url` field from `pylock.toml` and drops it in every output format (JSON, CycloneDX, SPDX). Keeping the package origin in the output would be the first step.
+
+
+
+# 13.11.2026 - local test: Maven cannot express an unspecified dependency version
+
+## 1. Why this test
+- ecosystem characteristic: "Maven cannot express an unspecified package version" (consequences: Maven x B2c is invalid)
+- The official Maven documentation does not say directly that a dependency version is required (checked again in 13.11: POM Reference, "Introduction to the Dependency Mechanism", maven-model 3.9.16 reference). The POM Reference only lists the version requirement syntax, and this list does not have empty or wildcard form (https://maven.apache.org/pom.html#dependency-version-requirement-specification).
+- The test files / output earlier is lost, so i tested again and saved the output in maven_version_test\pom.xml
+
+## 2. Setup
+- Test folder, fake file: `MS_test_system\maven_version_test\pom.xml`  Not part of the experiment.
+- Command: `mvn dependency:resolve "-Dmaven.repo.local=$env:TEMP\m2_test" > maven_version_test.txt` (ask maven to resolve, download the package to local repo m2_test, and put the command output in a txt file).
+- Apache Maven 3.9.16, Java 25.0.3, local Windows environment.
+
+## 3. Results (3 runs, all fail while reading the POM)
+
+| run | dependency | `<version>` in pom.xml | error |
+|---|---|---|---|
+| 1 | `io.github.shirley1997.thesis:xueting-thesis-event-juhe` | element missing | `'dependencies.dependency.version' for io.github.shirley1997.thesis:xueting-thesis-event-juhe:jar is missing. @ line 7, column 17` |
+| 2 | `io.github.shirley1997.thesis:xueting-thesis-event-juhe` | empty: `<version></version>` | `'dependencies.dependency.version' for io.github.shirley1997.thesis:xueting-thesis-event-juhe:jar is missing. @ line 10, column 16` |
+| 3 | `io.javalin:javalin` (public package) | element missing | `'dependencies.dependency.version' for io.javalin:javalin:jar is missing. @ line 7, column 17` |
+
+- Each run also printed: `Some problems were encountered while processing the POMs:` / `The build could not read 1 project -> [Help 1]` / `[Help 1] http://cwiki.apache.org/confluence/display/MAVEN/ProjectBuildingException`.
+- Line 7 = the `<dependency>` element (version element missing); line 10 = the empty `<version></version>` element (run 2 matches the current file in the test folder).
+
+## 4. Conclusion
+- Without a version (missing or empty entry), Maven 3.9.16 rejects the POM before any dependency resolution starts. The same happens for an internal and a public package.
+- So "unspecified version" (B2c) cannot be expressed in Maven 
+- Not tested: a version given by `dependencyManagement` or a parent POM (not used in the experiment).
+
+## 5. To do in the thesis
+- Adjust every sentence that says "Maven cannot express an unspecified version": the source is **my own test** (this entry), not the Maven documentation. Places: Foundations 3.1.3 ("A dependency without a specified version will cause a resolution error" -> it fails when the POM is read, before resolution), 5.3.2 (invalid combinations example), 6.4.3 / 6.4.4.
+- Possible wording: "the version requirement syntax of Maven has no form for an unspecified version [POM Reference]; a local test with Maven 3.9.16 showed that a dependency without a version is rejected when the POM is read."
+
