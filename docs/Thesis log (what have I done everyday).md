@@ -7900,3 +7900,67 @@ malicious_resolved, 1.0.3:  http://host.docker.internal:8081/repository/pypi-gro
 - Adjust every sentence that says "Maven cannot express an unspecified version": the source is **my own test** (this entry), not the Maven documentation. Places: Foundations 3.1.3 ("A dependency without a specified version will cause a resolution error" -> it fails when the POM is read, before resolution), 5.3.2 (invalid combinations example), 6.4.3 / 6.4.4.
 - Possible wording: "the version requirement syntax of Maven has no form for an unspecified version [POM Reference]; a local test with Maven 3.9.16 showed that a dependency without a version is rejected when the POM is read."
 
+
+
+# 17.11.2026 - sub-RQ2: Trivy Python documentation (for the results chapter: Trivy mechanism and output)
+
+## 1. Source
+
+- Trivy documentation, Python page (docs file in the repository):
+  https://github.com/aquasecurity/trivy/blob/main/docs/guide/coverage/language/python.md
+- Use this file in the repository, not the rendered page `trivy.dev/latest` (it was out of date when I
+  checked it in September and did not mention `pylock`; see `theoretical_evaluation_tables.md`).
+- already added to reference.bib, key: `trivy_python_docs`.
+
+## 2. What the documentation says 
+
+Feature table, the Python rows:
+
+| Package manager | File | Transitive dependencies | Dependency graph |
+|---|---|---|---|
+| pip | `requirements.txt` | - | - |
+| Pipenv | `Pipfile.lock` | yes | - |
+| Poetry | `poetry.lock` | yes | yes |
+| uv | `uv.lock` | yes | yes |
+| pylock | `pylock.toml` [^2] | yes | yes |
+
+`pyproject.toml` is **not** a row in this table -> it is not an input file on its own.
+
+Section "Poetry":
+> "Trivy uses `poetry.lock` to identify dependencies and find vulnerabilities.
+> To build the correct dependency graph, `pyproject.toml` also needs to be present next to `poetry.lock`."
+
+Section "pylock":
+> "Trivy uses `pylock.toml`[^2] to identify dependencies and find vulnerabilities."
+> "To identify direct dependencies and mark dev dependencies, `pyproject.toml` needs to be present next to `pylock.toml`."
+
+Footnote:
+> "Also `pylock.<identifier>.toml` per PEP 751."
+-> this is what covers my file names `pylock.test.toml` and `pylock.test3.toml`.
+
+Section "pip" (`requirements.txt`):
+> "`requirements.txt` files usually contain only the direct dependencies and not contain the transitive dependencies.
+> Therefore, Trivy scans only for the direct dependencies with `requirements.txt`."
+
+## 3. What this means for my results (link to earlier entries)
+
+- Trivy **finds** dependencies only in the **lock file** (`pylock.toml` / `pylock.<identifier>.toml`,
+  `poetry.lock`, `uv.lock`, `Pipfile.lock`) or in `requirements.txt`. `pyproject.toml` is only used
+  **next to a lock file**, to mark which packages are direct dependencies.
+- This is the same as what I found in the **source code** on 10.10.2026 (section 9, "for Python,
+  Trivy only has input in C1c cells"): there is no stand-alone `pyproject.toml` analyzer;
+  `pyproject.toml` is collected, but only used inside `mergePyProject()`, which runs once per lock
+  file. No lock file -> `pyproject.toml` is never parsed into a result.
+- My own runs showed the same: on 10.10.2026 (section 9) the `"Relationship": "direct"` label came
+  from `pyproject.toml` only because the lock file was next to it; on 13.10.2026 (local test of all
+  tools) I noted "Trivy did the opposite: only the lock files, not `pyproject.toml` on its own".
+- Probe run 30.10.2026 (table in section 6): pip **C1c** -> Trivy lists the internal package 1.0.3
+  from `pylock`; pip **C1b** -> **no input file** for Trivy, because in C1b no `pylock` file is used,
+  only `pyproject.toml` is present.
+- The Python service of the test application does not have `requirements.txt`, `poetry.lock`,
+  `uv.lock` or `Pipfile.lock`, so in this experiment the only Python input Trivy can use is the
+  `pylock` file of the C1c cells.
+- Now there is a **documentation source** for this, not only my source code reading and test.
+  Results chapter: use the docs quote (`trivy_python_docs`) for the mechanism, and the 10.10 source
+  check + the 30.10 probe (C1b vs C1c) as my own evidence.
+- remember to check Table 5: Security scanners, versions, and configurations used in the experiment. in https://arxiv.org/pdf/2604.21278 , use the similar table format to present the command and version used in section 6.6 for the three tools (DepCheck, DepGate, superconfused, trivy)
