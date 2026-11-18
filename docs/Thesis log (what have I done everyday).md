@@ -7964,3 +7964,63 @@ Section "pip" (`requirements.txt`):
   Results chapter: use the docs quote (`trivy_python_docs`) for the mechanism, and the 10.10 source
   check + the 30.10 probe (C1b vs C1c) as my own evidence.
 - remember to check Table 5: Security scanners, versions, and configurations used in the experiment. in https://arxiv.org/pdf/2604.21278 , use the similar table format to present the command and version used in section 6.6 for the three tools (DepCheck, DepGate, superconfused, trivy)
+
+
+# 18.11.2026 - sub-RQ2: reran the super-confused local tests (Python service + positive control) with exit code
+
+## 1. Why I reran
+
+- The two result files from 13.10 are **empty (0 bytes)**:
+  - `sub-RQ2_tool_selection\tool_scan_pilot\python_superconfused.json`
+  - `sub-RQ2_tool_selection\tool_scan_pilot\python_superconfused_positive_control.json`
+- An empty file can mean two different things:
+  - the tool ran and found nothing (exit code 0), or
+  - the tool failed, e.g. wrong file path (exit code 1).
+- In `--json` mode super-confused prints **no error message** (13.10, section 7(a)), so the file alone can't show which case it is.
+- On 13.10 I didn't save the exit code. So I reran both tests and saved the exit code + the readable output (without `--json`).
+- The old files are kept. The reruns are written into **new** files.
+
+## 2. What I ran
+
+- Tool: super-confused 1.2.0, local install (same as 13.10).
+- Each test = 2 runs on the same file:
+  - run 1 with `--json` -> result file + exit code in the log
+  - run 2 without `--json` -> readable output in the log
+
+```bash
+SCA=/d/Master_Winfo/MA_Supply_chain_security/sca_tool_install
+SC="$SCA/superconfused/node_modules/super-confused/super-confused.js"
+OUT=/d/Master_Winfo/MA_Supply_chain_security/MS_test_system/sub-RQ2_tool_selection/tool_scan_pilot
+
+# test 1: Python service
+cd /d/Master_Winfo/MA_Supply_chain_security/MS_test_system/services/python
+"$SC" --json pyproject.toml > "$OUT/python_superconfused_rerun.json" 2>> "$OUT/python_superconfused_rerun_log.txt"
+echo "json scan exit code: $?" | tee -a "$OUT/python_superconfused_rerun_log.txt"
+"$SC" pyproject.toml 2>&1 | tee -a "$OUT/python_superconfused_rerun_log.txt"
+
+# test 2: positive control (one name with three hyphens, 404 on PyPI)
+cd "$SCA/sc_control"
+"$SC" --json pyproject.toml > "$OUT/python_superconfused_positive_control_rerun.json" 2>> "$OUT/python_superconfused_positive_control_rerun_log.txt"
+echo "json scan exit code: $?" | tee -a "$OUT/python_superconfused_positive_control_rerun_log.txt"
+"$SC" pyproject.toml 2>&1 | tee -a "$OUT/python_superconfused_positive_control_rerun_log.txt"
+```
+
+## 3. Input files
+
+- Test 1: `services\python\pyproject.toml` - Flask + the two internal packages `xueting-thesis-event-fengfu`, `xueting-thesis-service-zhuanfa` (three hyphens each).
+- Test 2: `D:\Master_Winfo\MA_Supply_chain_security\sca_tool_install\sc_control\pyproject.toml` - only `xueting-thesis-not-published` (three hyphens, does not exist on PyPI). Same file as the 13.10 positive control.
+
+## 4. Result files (in `sub-RQ2_tool_selection\tool_scan_pilot\`)
+
+- `python_superconfused_rerun.json` - JSON result of the Python service scan (0 bytes = nothing found).
+- `python_superconfused_rerun_log.txt` - exit code of the JSON run + readable output of the Python service scan.
+- `python_superconfused_positive_control_rerun.json` - JSON result of the positive control scan (0 bytes = nothing found).
+- `python_superconfused_positive_control_rerun_log.txt` - exit code of the JSON run + readable output of the positive control scan.
+
+## 5. Conclusion
+
+- Both runs ended with exit code 0, so super-confused ran correctly in both tests.
+- So the empty files mean "nothing found", not "the tool failed". This confirms the 13.10 result.
+- super-confused did not report the internal packages and not the positive control name, because of its name filter (13.10, section 7(d)): names with three hyphens are not checked on the public registry.
+- The two-name test from 13.10 (`sc_control2`, result in `tool_scan_pilot\superconfused_positive_control.txt`) still shows the other side: the name with one hyphen is reported.
+- Used in thesis 5.4.1 (why super-confused is replaced by DepCheck).
