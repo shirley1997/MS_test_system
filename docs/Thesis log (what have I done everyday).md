@@ -8024,3 +8024,53 @@ echo "json scan exit code: $?" | tee -a "$OUT/python_superconfused_positive_cont
 - super-confused did not report the internal packages and not the positive control name, because of its name filter (13.10, section 7(d)): names with three hyphens are not checked on the public registry.
 - The two-name test from 13.10 (`sc_control2`, result in `tool_scan_pilot\superconfused_positive_control.txt`) still shows the other side: the name with one hyphen is reported.
 - Used in thesis 5.4.1 (why super-confused is replaced by DepCheck).
+
+# 20.11.2026 - sub-RQ2: local DepGate positive control (PyPI, npm, Maven)
+
+## 1. Why
+
+- DepGate needs no positive control in CI, because its `compare` output shows the registry answer for every package (`exists`, `versionCount`, `resolved_version`, `isMissing`). So I can see from the output that the registry check happened.
+- What the probe run (30.10) does not show for npm and PyPI: the internal packages exist on the public registry, so DepGate never took the "name is free" path there. For Maven it did (`exists=false`, `isMissing=true` in all 3 Maven cells). (because depgate use maven API to check package existance)
+- I ran one local positive control per ecosystem: a made-up name that does not exist on the public registry. If DepGate reports it as missing, the "name is free" check works.
+
+## 2. Input files
+
+- Tool: DepGate 0.10.0, local install (`sca_tool_install\depgate_venv`).
+- Made-up package name in all three files: `xueting-thesis-not-published` (Maven: `io.github.shirley1997.notpublished:xueting-thesis-not-published`), version 1.0.0. The same names as in the DepCheck positive controls in CI.
+- PyPI: `D:\Master_Winfo\MA_Supply_chain_security\sca_tool_install\sc_control\pyproject.toml` (same file as the super-confused positive control).
+- npm and Maven: in `sub-RQ2_tool_selection\tool_scan_pilot\made_up_files\`
+  - `package.json` + `package-lock.json` (lockfileVersion 3, same format as the npm service)
+  - `pom.xml` (with the Maven namespace `xmlns="http://maven.apache.org/POM/4.0.0"`, like the Java service; DepGate only reads dependencies inside this namespace)
+
+## 3. Commands (Git Bash)
+
+```bash
+source /d/Master_Winfo/MA_Supply_chain_security/sca_tool_install/env.sh
+PC="$OUT/depgate_positive_control"
+
+# PyPI
+cd "$SCA/sc_control"
+"$DEPGATE" scan -t pypi -d . -a compare -o "$PC/pypi_depgate_positive_control_compare.json" --loglevel DEBUG 2>&1 | tee "$PC/pypi_depgate_positive_control_log.txt"
+echo "depgate exit code: ${PIPESTATUS[0]}" | tee -a "$PC/pypi_depgate_positive_control_log.txt"
+
+# npm and Maven
+cd "$OUT/made_up_files"
+"$DEPGATE" scan -t npm -d . -a compare -o "$PC/npm_depgate_positive_control_compare.json" --loglevel DEBUG 2>&1 | tee "$PC/npm_depgate_positive_control_log.txt"
+echo "depgate exit code: ${PIPESTATUS[0]}" | tee -a "$PC/npm_depgate_positive_control_log.txt"
+
+"$DEPGATE" scan -t maven -d . -a compare -o "$PC/maven_depgate_positive_control_compare.json" --loglevel DEBUG 2>&1 | tee "$PC/maven_depgate_positive_control_log.txt"
+```
+
+## 4. Result files (in `sub-RQ2_tool_selection\tool_scan_pilot\depgate_positive_control\`)
+
+- `pypi_depgate_positive_control_compare.json`, `pypi_depgate_positive_control_log.txt`
+- `npm_depgate_positive_control_compare.json`, `npm_depgate_positive_control_log.txt`
+- `maven_depgate_positive_control_compare.json`, `maven_depgate_positive_control_log.txt`
+
+## 5. Result
+
+- All three ecosystems: DepGate reported the made-up name as missing: `exists: false`, `isMissing: true`, `hasRisk: true`. The log says "Package: xueting-thesis-not-published is NOT present on public provider."
+- npm: the log shows that DepGate read `package-lock.json` ("preferring package-lock.json"), the same way as in the npm service.
+- Exit code 0 (PyPI, npm; the Maven exit code was not saved), because `compare` mode does not fail the scan when it finds a risk.
+- Conclusion: the "name is free" check of DepGate works in all three ecosystems. Together with the per-package registry answer in the CI output, a DepGate result without a warning means "the name exists on the public registry", not "the check did not run".
+- Used in thesis 5.4.2, Phase 1 (positive controls).
